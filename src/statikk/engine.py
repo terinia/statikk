@@ -21,16 +21,12 @@ class SingleTableApplication:
     def _get_dynamodb_client(self):
         dynamodb = boto3.resource(
             "dynamodb",
-            config=Config(
-                region_name=os.environ.get("AWS_DEFAULT_REGION", "eu-west-1")
-            ),
+            config=Config(region_name=os.environ.get("AWS_DEFAULT_REGION", "eu-west-1")),
         )
         return dynamodb.Table(self.table.name)
 
     def get_item(self, id: str, model_class: Type[DatabaseModel]):
-        return model_class(
-            **self._get_dynamodb_client().get_item(Key={"id": id})["Item"]
-        )
+        return model_class(**self._get_dynamodb_client().get_item(Key={"id": id})["Item"])
 
     def put_item(self, model: DatabaseModel):
         for idx in self.table.indexes:
@@ -64,16 +60,14 @@ class SingleTableApplication:
             for field_name, field_info in model_fields.items()
             if field_info.annotation is not None
             if set(field_info.annotation.__bases__).intersection({IndexPrimaryKeyField})
-            and getattr(model, field_name).index_name == idx.name
+            and idx.name in getattr(model, field_name).index_names
         ][0]
         sort_key_fields = [
             field_name
             for field_name, field_info in model_fields.items()
             if field_info.annotation is not None
-            if set(field_info.annotation.__bases__).intersection(
-                {IndexSecondaryKeyField}
-            )
-            and getattr(model, field_name).index_name == idx.name
+            if set(field_info.annotation.__bases__).intersection({IndexSecondaryKeyField})
+            and idx.name in getattr(model, field_name).index_names
         ]
 
         def _get_sort_key_value():
@@ -81,9 +75,7 @@ class SingleTableApplication:
                 return None
             if len(sort_key_fields) == 1:
                 return getattr(model, sort_key_fields[0]).value
-            return self.table.delimiter.join(
-                [str(getattr(model, field).value) for field in sort_key_fields]
-            )
+            return self.table.delimiter.join([str(getattr(model, field).value) for field in sort_key_fields])
 
         return {
             idx.hash_key: getattr(model, hash_key_field).value,

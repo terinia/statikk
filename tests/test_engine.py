@@ -24,12 +24,14 @@ class DoubleIndexModel(DatabaseModel):
     player_id: IndexPrimaryKeyField[str]
     type: IndexSecondaryKeyField[str]
     tier: IndexSecondaryKeyField[str]
-    card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(
-        index_name="secondary-index"
-    )
-    added_at: IndexSecondaryKeyField[datetime] = IndexSecondaryKeyField(
-        index_name="secondary-index"
-    )
+    card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
+    added_at: IndexSecondaryKeyField[datetime] = IndexSecondaryKeyField(index_names=["secondary-index"])
+
+
+class MultiIndexField(DatabaseModel):
+    player_id: IndexPrimaryKeyField[str]
+    card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
+    type: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_names=["main-index", "secondary-index"])
 
 
 def _dynamo_client():
@@ -64,14 +66,12 @@ def test_create_my_awesome_model():
     my_table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
-        indexes=[GSI(name="main-index", hash_key="gsi_sk", sort_key="gsi_pk")],
+        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)
     dynamo_table = dynamo.Table(my_table.name)
-    model = MyAwesomeModel(
-        id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY"
-    )
+    model = MyAwesomeModel(id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
     app = SingleTableApplication(table=my_table)
     app.put_item(model)
     assert dynamo_table.get_item(Key={"id": model.id})["Item"] == {
@@ -79,20 +79,18 @@ def test_create_my_awesome_model():
         "player_id": "123",
         "tier": "LEGENDARY",
         "type": "MyAwesomeModel",
-        "gsi_sk": "123",
-        "gsi_pk": "MyAwesomeModel|LEGENDARY",
+        "gsi_pk": "123",
+        "gsi_sk": "MyAwesomeModel|LEGENDARY",
     }
-    model_2 = MyAwesomeModel(
-        id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC"
-    )
+    model_2 = MyAwesomeModel(id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC")
     app.put_item(model_2)
     assert dynamo_table.get_item(Key={"id": model_2.id})["Item"] == {
         "id": "foo-2",
         "player_id": "123",
         "tier": "EPIC",
         "type": "MyAwesomeModel",
-        "gsi_sk": "123",
-        "gsi_pk": "MyAwesomeModel|EPIC",
+        "gsi_pk": "123",
+        "gsi_sk": "MyAwesomeModel|EPIC",
     }
     mock_dynamodb().stop()
 
@@ -103,8 +101,8 @@ def test_multi_index_table():
         name="my-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
-            GSI(name="main-index", hash_key="gsi_sk", sort_key="gsi_pk"),
-            GSI(name="secondary-index", hash_key="gsi_sk_2", sort_key="gsi_pk_2"),
+            GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk"),
+            GSI(name="secondary-index", hash_key="gsi_pk_2", sort_key="gsi_sk_2"),
         ],
     )
     dynamo = _dynamo_client()
@@ -127,9 +125,38 @@ def test_multi_index_table():
         "tier": "LEGENDARY",
         "card_template_id": "abc",
         "added_at": "2023-09-10 12:00:00",
-        "gsi_sk": "123",
-        "gsi_pk": "DoubleIndexModel|LEGENDARY",
-        "gsi_sk_2": "abc",
-        "gsi_pk_2": "2023-09-10 12:00:00",
+        "gsi_pk": "123",
+        "gsi_sk": "DoubleIndexModel|LEGENDARY",
+        "gsi_pk_2": "abc",
+        "gsi_sk_2": "2023-09-10 12:00:00",
+    }
+    mock_dynamodb().stop()
+
+
+def test_multi_field_indeX():
+    mock_dynamodb().start()
+    table = Table(
+        name="my-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk"),
+            GSI(name="secondary-index", hash_key="gsi_pk_2", sort_key="gsi_sk_2"),
+        ],
+    )
+    dynamo = _dynamo_client()
+    _create_dynamodb_table(dynamo, table)
+    dynamo_table = dynamo.Table(table.name)
+    model = MultiIndexField(id="card-id", player_id="123", card_template_id="abc", type="LEGENDARY")
+    app = SingleTableApplication(table=table)
+    app.put_item(model)
+    assert dynamo_table.get_item(Key={"id": model.id})["Item"] == {
+        "card_template_id": "abc",
+        "gsi_pk": "123",
+        "gsi_pk_2": "abc",
+        "gsi_sk": "LEGENDARY",
+        "gsi_sk_2": "LEGENDARY",
+        "id": "card-id",
+        "player_id": "123",
+        "type": "LEGENDARY",
     }
     mock_dynamodb().stop()

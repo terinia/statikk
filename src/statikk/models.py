@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 class Index(BaseModel, Generic[T]):
     value: Optional[T] = None
-    index_name: Optional[str] = "main-index"
+    index_names: Optional[List[str]] = ["main-index"]
 
     @model_serializer
     def ser_model(self) -> T:
@@ -69,9 +69,7 @@ class DatabaseModel(BaseModel):
             for key, value in data.items():
                 annotation_bases = set(cls.model_fields[key].annotation.__bases__)
                 index_types = {Index, IndexPrimaryKeyField, IndexSecondaryKeyField}
-                if index_types.intersection(annotation_bases) and not isinstance(
-                    value, dict
-                ):
+                if index_types.intersection(annotation_bases) and not isinstance(value, dict):
                     if isinstance(value, tuple(index_types)):
                         continue
                     else:
@@ -79,6 +77,6 @@ class DatabaseModel(BaseModel):
                         annotation = field.annotation
                         extra_fields = dict()
                         if field.default is not PydanticUndefined:
-                            extra_fields["index_name"] = field.default.index_name
+                            extra_fields["index_names"] = field.default.index_names
                         data[key] = annotation(value=value, **extra_fields)
         return data
