@@ -1,10 +1,13 @@
 import os
 from datetime import datetime
-from typing import Any, Dict, Type
-from pydantic import Field
+from typing import Any, Dict, Type, Optional
+
 import boto3
 from botocore.config import Config
+from pydantic.fields import FieldInfo
+from boto3.dynamodb.conditions import ComparisonCondition
 
+from src.statikk.conditions import Condition
 from src.statikk.models import (
     Table,
     DatabaseModel,
@@ -18,7 +21,7 @@ class SingleTableApplication:
     def __init__(self, table: Table):
         self.table = table
 
-    def _get_dynamodb_client(self):
+    def _get_dynamodb_table(self):
         dynamodb = boto3.resource(
             "dynamodb",
             config=Config(region_name=os.environ.get("AWS_DEFAULT_REGION", "eu-west-1")),
@@ -26,7 +29,7 @@ class SingleTableApplication:
         return dynamodb.Table(self.table.name)
 
     def get_item(self, id: str, model_class: Type[DatabaseModel]):
-        return model_class(**self._get_dynamodb_client().get_item(Key={"id": id})["Item"])
+        return model_class(**self._get_dynamodb_table().get_item(Key={"id": id})["Item"])
 
     def put_item(self, model: DatabaseModel):
         for idx in self.table.indexes:
@@ -39,14 +42,37 @@ class SingleTableApplication:
         data = model.model_dump()
         for key, value in data.items():
             data[key] = self._serialize_value(value)
-        self._get_dynamodb_client().put_item(Item=data)
+        self._get_dynamodb_table().put_item(Item=data)
+
+    def query_index(
+        self,
+        index_name: str,
+        hash_key: Condition,
+        range_key: Condition,
+        model_class: Type[DatabaseModel],
+        filter_condition: Optional[ComparisonCondition] = None,
+    ):
+        index = [idx for idx in self.table.indexes if idx.name == index_name][0]
+        key_condition = hash_key.evaluate(index.hash_key)
+        if range_key is not None:
+            key_condition = key_condition & range_key.evaluate(index.sort_key)
+
+        query_params = {
+            "IndexName": index_name,
+            "KeyConditionExpression": key_condition,
+        }
+        if filter_condition:
+            query_params["FilterExpression"] = filter_condition
+        items = self._get_dynamodb_table().query(**query_params)
+
+        return [model_class(**item) for item in items["Items"]]
 
     def _set_index_fields(self, model: DatabaseModel, idx: GSI):
         model_fields = model.model_fields
         if idx.hash_key not in model_fields:
-            model_fields[idx.hash_key] = Field(default=None)
+            model_fields[idx.hash_key] = FieldInfo(annotation=str, default=None, required=False)
         if idx.sort_key not in model_fields:
-            model_fields[idx.sort_key] = Field(default=None)
+            model_fields[idx.sort_key] = FieldInfo(annotation=str, default=None, required=False)
 
     def _serialize_value(self, value: Any):
         if isinstance(value, datetime):

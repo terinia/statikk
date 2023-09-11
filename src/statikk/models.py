@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-from typing import Optional, List, TypeVar, Generic, Any, Dict
+from typing import Optional, List, TypeVar, Generic, Any
 
 from pydantic import BaseModel, Field, model_serializer, model_validator
 from pydantic_core._pydantic_core import PydanticUndefined
@@ -67,7 +66,9 @@ class DatabaseModel(BaseModel):
             if "type" not in data:
                 data["type"] = cls.__name__
             for key, value in data.items():
-                annotation_bases = set(cls.model_fields[key].annotation.__bases__)
+                annotation_bases = (
+                    set(cls.model_fields[key].annotation.__bases__) if cls.model_fields[key].annotation else {}
+                )
                 index_types = {Index, IndexPrimaryKeyField, IndexSecondaryKeyField}
                 if index_types.intersection(annotation_bases) and not isinstance(value, dict):
                     if isinstance(value, tuple(index_types)):
