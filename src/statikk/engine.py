@@ -61,6 +61,7 @@ class SingleTableApplication:
         model_class: Type[DatabaseModel],
         filter_condition: Optional[ComparisonCondition] = None,
     ):
+        results = []
         index = [idx for idx in self.table.indexes if idx.name == index_name][0]
         key_condition = hash_key.evaluate(index.hash_key)
         if range_key is not None:
@@ -72,9 +73,14 @@ class SingleTableApplication:
         }
         if filter_condition:
             query_params["FilterExpression"] = filter_condition
-        items = self._get_dynamodb_table().query(**query_params)
+        last_evaluated_key = True
 
-        return [model_class(**item) for item in items["Items"]]
+        while last_evaluated_key:
+            items = self._get_dynamodb_table().query(**query_params)
+            results.extend([model_class(**item) for item in items["Items"]])
+            last_evaluated_key = items.get("LastEvaluatedKey", False)
+
+        return results
 
     def _convert_dynamodb_to_python(self, item) -> Dict[str, Any]:
         result = {}
