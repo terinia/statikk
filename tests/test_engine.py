@@ -200,7 +200,6 @@ def test_query_model_index():
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)
-    dynamo.Table(my_table.name)
     model = MyAwesomeModel(id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
     app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
     app.put_item(model)
@@ -217,6 +216,31 @@ def test_query_model_index():
     assert models[0].id == model.id
     assert models[0].type == model.type
     assert models[0].tier == model.tier
+    mock_dynamodb().stop()
+
+
+def test_batch_get_items():
+    mock_dynamodb().start()
+    my_table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+    )
+    dynamo = _dynamo_client()
+    _create_dynamodb_table(dynamo, my_table)
+    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
+    model = MyAwesomeModel(id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
+    model_2 = MyAwesomeModel(id="foo-2", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
+    app.put_item(model)
+    app.put_item(model_2)
+    models = app.batch_get_items(["foo", "foo-2"], MyAwesomeModel, batch_size=1)
+    assert len(models) == 2
+    assert models[0].id == model.id
+    assert models[0].type == model.type
+    assert models[0].tier == model.tier
+    assert models[1].id == model_2.id
+    assert models[1].type == model_2.type
+    assert models[1].tier == model_2.tier
     mock_dynamodb().stop()
 
 
