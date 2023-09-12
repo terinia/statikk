@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from src.statikk.models import (
+from statikk.models import (
     DatabaseModel,
     IndexPrimaryKeyField,
     IndexSecondaryKeyField,
@@ -12,7 +12,7 @@ def test_index_shorthand():
         type: IndexPrimaryKeyField[str]
         player_id: IndexSecondaryKeyField[str]
 
-    with patch("src.statikk.models.uuid.uuid4", return_value="123"):
+    with patch("statikk.models.uuid.uuid4", return_value="123"):
         foo = Foo(player_id="abc")
         assert foo.type.value == "Foo"
         assert foo.type.index_names == ["main-index"]

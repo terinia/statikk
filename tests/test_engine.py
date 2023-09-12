@@ -1,8 +1,8 @@
 from datetime import datetime
 
-from src.statikk.conditions import Equals, BeginsWith
-from src.statikk.engine import SingleTableApplication
-from src.statikk.models import (
+from statikk.conditions import Equals, BeginsWith
+from statikk.engine import SingleTableApplication
+from statikk.models import (
     DatabaseModel,
     IndexPrimaryKeyField,
     IndexSecondaryKeyField,

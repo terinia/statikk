@@ -7,8 +7,8 @@ from botocore.config import Config
 from pydantic.fields import FieldInfo
 from boto3.dynamodb.conditions import ComparisonCondition
 
-from src.statikk.conditions import Condition
-from src.statikk.models import (
+from statikk.conditions import Condition
+from statikk.models import (
     Table,
     DatabaseModel,
     GSI,
