@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from typing import Any, Dict, Type, Optional
+from typing import Any, Dict, Type, Optional, List
 
 import boto3
 from botocore.config import Config
@@ -18,8 +18,12 @@ from src.statikk.models import (
 
 
 class SingleTableApplication:
-    def __init__(self, table: Table):
+    def __init__(self, table: Table, models: List[Type[DatabaseModel]]):
         self.table = table
+        self.models = models
+        for idx in self.table.indexes:
+            for model in self.models:
+                self._set_index_fields(model, idx)
 
     def _get_dynamodb_table(self):
         dynamodb = boto3.resource(
@@ -33,7 +37,6 @@ class SingleTableApplication:
 
     def put_item(self, model: DatabaseModel):
         for idx in self.table.indexes:
-            self._set_index_fields(model, idx)
             index_fields = self._compose_index_values(model, idx)
             for key, value in index_fields.items():
                 if value is not None:
@@ -67,7 +70,7 @@ class SingleTableApplication:
 
         return [model_class(**item) for item in items["Items"]]
 
-    def _set_index_fields(self, model: DatabaseModel, idx: GSI):
+    def _set_index_fields(self, model: DatabaseModel | Type[DatabaseModel], idx: GSI):
         model_fields = model.model_fields
         if idx.hash_key not in model_fields:
             model_fields[idx.hash_key] = FieldInfo(annotation=str, default=None, required=False)

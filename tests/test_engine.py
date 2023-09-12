@@ -26,22 +26,14 @@ class DoubleIndexModel(DatabaseModel):
     player_id: IndexPrimaryKeyField[str]
     type: IndexSecondaryKeyField[str]
     tier: IndexSecondaryKeyField[str]
-    card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(
-        index_names=["secondary-index"]
-    )
-    added_at: IndexSecondaryKeyField[datetime] = IndexSecondaryKeyField(
-        index_names=["secondary-index"]
-    )
+    card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
+    added_at: IndexSecondaryKeyField[datetime] = IndexSecondaryKeyField(index_names=["secondary-index"])
 
 
 class MultiIndexModel(DatabaseModel):
     player_id: IndexPrimaryKeyField[str]
-    card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(
-        index_names=["secondary-index"]
-    )
-    type: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(
-        index_names=["main-index", "secondary-index"]
-    )
+    card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
+    type: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_names=["main-index", "secondary-index"])
 
 
 def _dynamo_client():
@@ -81,10 +73,8 @@ def test_create_my_awesome_model():
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)
     dynamo_table = dynamo.Table(my_table.name)
-    model = MyAwesomeModel(
-        id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY"
-    )
-    app = SingleTableApplication(table=my_table)
+    model = MyAwesomeModel(id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
+    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
     app.put_item(model)
     assert dynamo_table.get_item(Key={"id": model.id})["Item"] == {
         "id": "foo",
@@ -94,9 +84,7 @@ def test_create_my_awesome_model():
         "gsi_pk": "123",
         "gsi_sk": "MyAwesomeModel|LEGENDARY",
     }
-    model_2 = MyAwesomeModel(
-        id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC"
-    )
+    model_2 = MyAwesomeModel(id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC")
     app.put_item(model_2)
     assert dynamo_table.get_item(Key={"id": model_2.id})["Item"] == {
         "id": "foo-2",
@@ -130,7 +118,7 @@ def test_multi_index_table():
         card_template_id="abc",
         added_at="2023-09-10 12:00:00",
     )
-    app = SingleTableApplication(table=table)
+    app = SingleTableApplication(table=table, models=[DoubleIndexModel])
     app.put_item(my_model)
     assert dynamo_table.get_item(Key={"id": my_model.id})["Item"] == {
         "id": "foo",
@@ -160,10 +148,8 @@ def test_multi_field_index():
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, table)
     dynamo_table = dynamo.Table(table.name)
-    model = MultiIndexModel(
-        id="card-id", player_id="123", card_template_id="abc", type="LEGENDARY"
-    )
-    app = SingleTableApplication(table=table)
+    model = MultiIndexModel(id="card-id", player_id="123", card_template_id="abc", type="LEGENDARY")
+    app = SingleTableApplication(table=table, models=[MultiIndexModel])
     app.put_item(model)
     assert dynamo_table.get_item(Key={"id": model.id})["Item"] == {
         "card_template_id": "abc",
@@ -190,10 +176,8 @@ def test_integration_get_item():
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, table)
-    model = MultiIndexModel(
-        id="card-id", player_id="123", card_template_id="abc", type="LEGENDARY"
-    )
-    app = SingleTableApplication(table=table)
+    model = MultiIndexModel(id="card-id", player_id="123", card_template_id="abc", type="LEGENDARY")
+    app = SingleTableApplication(table=table, models=[MultiIndexModel])
     app.put_item(model)
     item = app.get_item("card-id", MultiIndexModel)
     assert item.id == model.id
@@ -217,14 +201,10 @@ def test_query_model_index():
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)
     dynamo.Table(my_table.name)
-    model = MyAwesomeModel(
-        id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY"
-    )
-    app = SingleTableApplication(table=my_table)
+    model = MyAwesomeModel(id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
+    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
     app.put_item(model)
-    model_2 = MyAwesomeModel(
-        id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC"
-    )
+    model_2 = MyAwesomeModel(id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC")
     app.put_item(model_2)
     models = app.query_index(
         index_name="main-index",
