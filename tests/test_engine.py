@@ -13,7 +13,7 @@ from statikk.models import (
 from moto import mock_dynamodb
 import boto3
 from botocore.config import Config
-from boto3.dynamodb.conditions import Key, Attr
+from boto3.dynamodb.conditions import Attr
 
 
 class MyAwesomeModel(DatabaseModel):
