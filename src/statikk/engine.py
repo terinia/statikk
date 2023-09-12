@@ -36,16 +36,11 @@ class SingleTableApplication:
         return model_class(**self._get_dynamodb_table().get_item(Key={"id": id})["Item"])
 
     def put_item(self, model: DatabaseModel):
-        for idx in self.table.indexes:
-            index_fields = self._compose_index_values(model, idx)
-            for key, value in index_fields.items():
-                if value is not None:
-                    setattr(model, key, value)
-            model.model_rebuild(force=True)
-        data = model.model_dump()
-        for key, value in data.items():
-            data[key] = self._serialize_value(value)
+        data = self._get_item_data(model)
         self._get_dynamodb_table().put_item(Item=data)
+
+    def batch_write(self):
+        return BatchWriteContext(self)
 
     def query_index(
         self,
@@ -70,17 +65,29 @@ class SingleTableApplication:
 
         return [model_class(**item) for item in items["Items"]]
 
+    def _get_item_data(self, item: DatabaseModel):
+        for idx in self.table.indexes:
+            index_fields = self._compose_index_values(item, idx)
+            for key, value in index_fields.items():
+                if value is not None:
+                    setattr(item, key, value)
+            item.model_rebuild(force=True)
+        data = item.model_dump()
+        for key, value in data.items():
+            data[key] = self._serialize_value(value)
+        return data
+
+    def _serialize_value(self, value: Any):
+        if isinstance(value, datetime):
+            return str(value)
+        return value
+
     def _set_index_fields(self, model: DatabaseModel | Type[DatabaseModel], idx: GSI):
         model_fields = model.model_fields
         if idx.hash_key not in model_fields:
             model_fields[idx.hash_key] = FieldInfo(annotation=str, default=None, required=False)
         if idx.sort_key not in model_fields:
             model_fields[idx.sort_key] = FieldInfo(annotation=str, default=None, required=False)
-
-    def _serialize_value(self, value: Any):
-        if isinstance(value, datetime):
-            return str(value)
-        return value
 
     def _compose_index_values(self, model: DatabaseModel, idx: GSI) -> Dict[str, Any]:
         model_fields = model.model_fields
@@ -110,3 +117,40 @@ class SingleTableApplication:
             idx.hash_key: getattr(model, hash_key_field).value,
             idx.sort_key: _get_sort_key_value(),
         }
+
+    def _perform_batch_write(self, put_items: List[DatabaseModel], delete_items: List[DatabaseModel]):
+        if len(put_items) == 0 and len(delete_items) == 0:
+            return
+
+        dynamodb_table = self._get_dynamodb_table()
+
+        if len(put_items) > 0:
+            with dynamodb_table.batch_writer() as batch:
+                for item in put_items:
+                    data = self._get_item_data(item)
+                    batch.put_item(Item=data)
+
+        if len(delete_items) > 0:
+            with dynamodb_table.batch_writer() as batch:
+                for item in delete_items:
+                    data = self._get_item_data(item)
+                    batch.delete_item(Key=data)
+
+
+class BatchWriteContext:
+    def __init__(self, app: SingleTableApplication):
+        self._app = app
+        self._put_items: List[DatabaseModel] = []
+        self._delete_items: List[DatabaseModel] = []
+
+    def put(self, item: DatabaseModel):
+        self._put_items.append(item)
+
+    def delete(self, item: DatabaseModel):
+        self._delete_items.append(item)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._app._perform_batch_write(self._put_items, self._delete_items)
