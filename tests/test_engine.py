@@ -242,3 +242,45 @@ def test_batch_get_items():
     assert models[1].type == model_2.type
     assert models[1].tier == model_2.tier
     mock_dynamodb().stop()
+
+
+def test_batch_write():
+    mock_dynamodb().start()
+    my_table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+    )
+    dynamo = _dynamo_client()
+    _create_dynamodb_table(dynamo, my_table)
+    dynamo.Table(my_table.name)
+    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
+
+    with app.batch_write() as batch:
+        for i in range(30):
+            model = MyAwesomeModel(id=f"foo_{i}", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
+            batch.put(model)
+
+    models = app.query_index(
+        index_name="main-index",
+        hash_key=Equals("123"),
+        range_key=BeginsWith("MyAwesomeModel"),
+        filter_condition=Attr("tier").eq("LEGENDARY"),
+        model_class=MyAwesomeModel,
+    )
+    assert len(models) == 30
+
+    with app.batch_write() as batch:
+        for model in models:
+            batch.delete(model)
+
+    models = app.query_index(
+        index_name="main-index",
+        hash_key=Equals("123"),
+        range_key=BeginsWith("MyAwesomeModel"),
+        filter_condition=Attr("tier").eq("LEGENDARY"),
+        model_class=MyAwesomeModel,
+    )
+    assert len(models) == 0
+
+    mock_dynamodb().stop()
