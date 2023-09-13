@@ -17,6 +17,10 @@ from statikk.models import (
 )
 
 
+class InvalidSortKeyException(Exception):
+    pass
+
+
 class SingleTableApplication:
     def __init__(self, table: Table, models: List[Type[DatabaseModel]]):
         self.table = table
@@ -170,15 +174,28 @@ class SingleTableApplication:
             if set(field_info.annotation.__bases__).intersection({IndexSecondaryKeyField})
             and idx.name in getattr(model, field_name).index_names
         ]
-        if "type" not in sort_key_fields:
-            sort_key_fields.insert(0, "type")
 
         def _get_sort_key_value():
             if len(sort_key_fields) == 0:
                 return None
             if len(sort_key_fields) == 1:
-                return getattr(model, sort_key_fields[0]).value
-            return self.table.delimiter.join([str(getattr(model, field).value) for field in sort_key_fields])
+                value = getattr(model, sort_key_fields[0]).value
+                if not isinstance(value, str):
+                    return getattr(model, sort_key_fields[0]).value
+
+            if "type" not in sort_key_fields:
+                sort_key_fields.insert(0, "type")
+
+            sort_key_values: List[str] = []
+            for field in sort_key_fields:
+                value = getattr(model, field).value
+                if not isinstance(value, str):
+                    raise InvalidSortKeyException("")
+                sort_key_values.append(value)
+            return self.table.delimiter.join(sort_key_values)
+
+        print("\n-----------------")
+        print(_get_sort_key_value())
 
         return {
             idx.hash_key: getattr(model, hash_key_field).value,

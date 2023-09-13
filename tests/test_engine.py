@@ -1,7 +1,9 @@
 from datetime import datetime
 
+import pytest
+
 from statikk.conditions import Equals, BeginsWith
-from statikk.engine import SingleTableApplication
+from statikk.engine import SingleTableApplication, InvalidSortKeyException
 from statikk.models import (
     DatabaseModel,
     IndexPrimaryKeyField,
@@ -27,7 +29,7 @@ class DoubleIndexModel(DatabaseModel):
     type: IndexSecondaryKeyField[str]
     tier: IndexSecondaryKeyField[str]
     card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
-    added_at: IndexSecondaryKeyField[datetime] = IndexSecondaryKeyField(index_names=["secondary-index"])
+    added_at: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_names=["secondary-index"])
 
 
 class MultiIndexModel(DatabaseModel):
@@ -94,6 +96,70 @@ def test_create_my_awesome_model():
         "gsi_pk": "123",
         "gsi_sk": "MyAwesomeModel|EPIC",
     }
+    mock_dynamodb().stop()
+
+
+def test_valid_sort_key():
+    class NumberSortKeyModel(DatabaseModel):
+        player_id: IndexPrimaryKeyField[str]
+        number: IndexSecondaryKeyField[int]
+
+    class DateSortKeyModel(DatabaseModel):
+        player_id: IndexPrimaryKeyField[str]
+        date: IndexSecondaryKeyField[datetime]
+
+    mock_dynamodb().start()
+    my_table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+    )
+    dynamo = _dynamo_client()
+    _create_dynamodb_table(dynamo, my_table)
+    dynamo_table = dynamo.Table(my_table.name)
+    app = SingleTableApplication(table=my_table, models=[NumberSortKeyModel, DateSortKeyModel])
+
+    number_model = NumberSortKeyModel(id="foo", player_id="123", number=42)
+    app.put_item(number_model)
+    assert dynamo_table.get_item(Key={"id": number_model.id})["Item"] == {
+        "id": "foo",
+        "player_id": "123",
+        "number": 42,
+        "gsi_pk": "123",
+        "gsi_sk": 42,
+        "type": "NumberSortKeyModel",
+    }
+
+    date_model = DateSortKeyModel(id="foo_2", player_id="123", date="2023-09-10 12:00:00")
+    app.put_item(date_model)
+    assert dynamo_table.get_item(Key={"id": date_model.id})["Item"] == {
+        "id": "foo_2",
+        "player_id": "123",
+        "date": "2023-09-10 12:00:00",
+        "gsi_pk": "123",
+        "gsi_sk": "2023-09-10 12:00:00",
+        "type": "DateSortKeyModel",
+    }
+
+
+def test_invalid_sort_key():
+    class InvalidSortKeyModel(DatabaseModel):
+        player_id: IndexPrimaryKeyField[str]
+        type: IndexSecondaryKeyField[str]
+        number: IndexSecondaryKeyField[int]
+
+    mock_dynamodb().start()
+    my_table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+    )
+    dynamo = _dynamo_client()
+    _create_dynamodb_table(dynamo, my_table)
+    model = InvalidSortKeyModel(id="foo", player_id="123", type="InvalidSortKeyModel", number=42)
+    app = SingleTableApplication(table=my_table, models=[InvalidSortKeyModel])
+    with pytest.raises(InvalidSortKeyException):
+        app.put_item(model)
     mock_dynamodb().stop()
 
 
