@@ -170,6 +170,8 @@ class SingleTableApplication:
             if set(field_info.annotation.__bases__).intersection({IndexSecondaryKeyField})
             and idx.name in getattr(model, field_name).index_names
         ]
+        if "type" not in sort_key_fields:
+            sort_key_fields.insert(0, "type")
 
         def _get_sort_key_value():
             if len(sort_key_fields) == 0:
