@@ -194,9 +194,6 @@ class SingleTableApplication:
                 sort_key_values.append(value)
             return self.table.delimiter.join(sort_key_values)
 
-        print("\n-----------------")
-        print(_get_sort_key_value())
-
         return {
             idx.hash_key: getattr(model, hash_key_field).value,
             idx.sort_key: _get_sort_key_value(),
