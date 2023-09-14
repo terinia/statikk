@@ -14,7 +14,8 @@ from statikk.models import (
     DatabaseModel,
     GSI,
     IndexPrimaryKeyField,
-    IndexSecondaryKeyField, InvalidSortKeyException,
+    IndexSecondaryKeyField,
+    InvalidSortKeyException,
 )
 
 
@@ -150,7 +151,7 @@ class SingleTableApplication:
             return int(value.timestamp())
         return value
 
-    def _validate_sort_key_fields(self, model: Type[DatabaseModel]):
+    def _get_sort_keys_by_index(self, model: Type[DatabaseModel]) -> Dict[str, List[Type]]:
         sort_key_index_types: Dict[str, List[Type]] = {}
         for key, value in model.model_fields.items():
             if value.annotation.__bases__[0] == IndexSecondaryKeyField:
@@ -159,6 +160,10 @@ class SingleTableApplication:
                     if idx not in sort_key_index_types:
                         sort_key_index_types[idx] = []
                     sort_key_index_types[idx].append(value.annotation)
+        return sort_key_index_types
+
+    def _validate_sort_key_fields(self, model: Type[DatabaseModel]):
+        sort_key_index_types: Dict[str, List[Type]] = self._get_sort_keys_by_index(model)
         for idx, types in sort_key_index_types.items():
             if len(types) > 1:
                 for field_type in types:
@@ -170,20 +175,15 @@ class SingleTableApplication:
         if idx.hash_key not in model_fields:
             model_fields[idx.hash_key] = FieldInfo(annotation=str, default=None, required=False)
         if idx.sort_key not in model_fields:
-            sort_key_field_types: List[FieldInfo] = []
-            for value in model_fields.values():
-                if value.annotation.__bases__[0] == IndexSecondaryKeyField:
-                    sort_key_field_types.append(value)
-
+            # TODO: replace when models are done
+            sort_key_index_types: Dict[str, List[Type]] = self._get_sort_keys_by_index(model)
+            model_field_type = FieldInfo(annotation=str, default=None, required=False)
             if (
-                len(sort_key_field_types) > 1
-                or len(sort_key_field_types) == 0
-                or sort_key_field_types[0].annotation == IndexSecondaryKeyField[str]
+                len(sort_key_index_types[idx.name]) == 1
+                and sort_key_index_types[idx.name][0] != IndexSecondaryKeyField[str]
             ):
-                sort_key_type = FieldInfo(annotation=str, default=None, required=False)
-            else:
-                sort_key_type = FieldInfo(annotation=int, default=None, required=False)
-            model_fields[idx.sort_key] = sort_key_type
+                model_field_type = FieldInfo(annotation=int, default=None, required=False)
+            model_fields[idx.sort_key] = model_field_type
 
     def _compose_index_values(self, model: DatabaseModel, idx: GSI) -> Dict[str, Any]:
         model_fields = model.model_fields
