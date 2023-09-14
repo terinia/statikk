@@ -17,6 +17,10 @@ from statikk.models import (
 )
 
 
+class InvalidIndexNameError(Exception):
+    pass
+
+
 class SingleTableApplication:
     def __init__(self, table: Table, models: List[Type[DatabaseModel]]):
         self.table = table
@@ -50,14 +54,19 @@ class SingleTableApplication:
 
     def query_index(
         self,
-        index_name: str,
         hash_key: Condition,
         range_key: Condition,
         model_class: Type[DatabaseModel],
         filter_condition: Optional[ComparisonCondition] = None,
+        index_name: Optional[str] = None,
     ):
         results = []
-        index = [idx for idx in self.table.indexes if idx.name == index_name][0]
+        if not index_name:
+            index_name = self.table.indexes[0].name
+        index_filter = [idx for idx in self.table.indexes if idx.name == index_name]
+        if not index_filter:
+            raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
+        index = index_filter[0]
         key_condition = hash_key.evaluate(index.hash_key)
         if range_key is not None:
             key_condition = key_condition & range_key.evaluate(index.sort_key)
