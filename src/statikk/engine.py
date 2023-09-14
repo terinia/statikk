@@ -6,6 +6,7 @@ import boto3
 from botocore.config import Config
 from pydantic.fields import FieldInfo
 from boto3.dynamodb.conditions import ComparisonCondition
+from pydantic_core import PydanticUndefined
 
 from statikk.conditions import Condition
 from statikk.models import (
@@ -13,18 +14,16 @@ from statikk.models import (
     DatabaseModel,
     GSI,
     IndexPrimaryKeyField,
-    IndexSecondaryKeyField,
+    IndexSecondaryKeyField, InvalidSortKeyException,
 )
-
-
-class InvalidSortKeyException(Exception):
-    pass
 
 
 class SingleTableApplication:
     def __init__(self, table: Table, models: List[Type[DatabaseModel]]):
         self.table = table
         self.models = models
+        for model in self.models:
+            self._validate_sort_key_fields(model)
         for idx in self.table.indexes:
             for model in self.models:
                 self._set_index_fields(model, idx)
@@ -148,15 +147,43 @@ class SingleTableApplication:
 
     def _serialize_value(self, value: Any):
         if isinstance(value, datetime):
-            return str(value)
+            return int(value.timestamp())
         return value
+
+    def _validate_sort_key_fields(self, model: Type[DatabaseModel]):
+        sort_key_index_types: Dict[str, List[Type]] = {}
+        for key, value in model.model_fields.items():
+            if value.annotation.__bases__[0] == IndexSecondaryKeyField:
+                index_names = value.default.index_names if value.default is not PydanticUndefined else ["main-index"]
+                for idx in index_names:
+                    if idx not in sort_key_index_types:
+                        sort_key_index_types[idx] = []
+                    sort_key_index_types[idx].append(value.annotation)
+        for idx, types in sort_key_index_types.items():
+            if len(types) > 1:
+                for field_type in types:
+                    if field_type != IndexSecondaryKeyField[str]:
+                        raise InvalidSortKeyException()
 
     def _set_index_fields(self, model: DatabaseModel | Type[DatabaseModel], idx: GSI):
         model_fields = model.model_fields
         if idx.hash_key not in model_fields:
             model_fields[idx.hash_key] = FieldInfo(annotation=str, default=None, required=False)
         if idx.sort_key not in model_fields:
-            model_fields[idx.sort_key] = FieldInfo(annotation=str, default=None, required=False)
+            sort_key_field_types: List[FieldInfo] = []
+            for value in model_fields.values():
+                if value.annotation.__bases__[0] == IndexSecondaryKeyField:
+                    sort_key_field_types.append(value)
+
+            if (
+                len(sort_key_field_types) > 1
+                or len(sort_key_field_types) == 0
+                or sort_key_field_types[0].annotation == IndexSecondaryKeyField[str]
+            ):
+                sort_key_type = FieldInfo(annotation=str, default=None, required=False)
+            else:
+                sort_key_type = FieldInfo(annotation=int, default=None, required=False)
+            model_fields[idx.sort_key] = sort_key_type
 
     def _compose_index_values(self, model: DatabaseModel, idx: GSI) -> Dict[str, Any]:
         model_fields = model.model_fields
@@ -186,13 +213,7 @@ class SingleTableApplication:
             if "type" not in sort_key_fields:
                 sort_key_fields.insert(0, "type")
 
-            sort_key_values: List[str] = []
-            for field in sort_key_fields:
-                value = getattr(model, field).value
-                if not isinstance(value, str):
-                    raise InvalidSortKeyException("")
-                sort_key_values.append(value)
-            return self.table.delimiter.join(sort_key_values)
+            return self.table.delimiter.join([getattr(model, field).value for field in sort_key_fields])
 
         return {
             idx.hash_key: getattr(model, hash_key_field).value,

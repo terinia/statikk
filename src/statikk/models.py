@@ -45,6 +45,10 @@ class IndexSecondaryKeyField(Index[T], Generic[T]):
     pass
 
 
+class InvalidSortKeyException(Exception):
+    pass
+
+
 class DatabaseModel(BaseModel):
     id: str
     type: str = None

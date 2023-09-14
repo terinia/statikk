@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 
 from statikk.conditions import Equals, BeginsWith
-from statikk.engine import SingleTableApplication, InvalidSortKeyException
+from statikk.engine import SingleTableApplication
 from statikk.models import (
     DatabaseModel,
     IndexPrimaryKeyField,
@@ -11,6 +11,7 @@ from statikk.models import (
     Table,
     KeySchema,
     GSI,
+    InvalidSortKeyException,
 )
 from moto import mock_dynamodb
 import boto3
@@ -24,12 +25,22 @@ class MyAwesomeModel(DatabaseModel):
     tier: IndexSecondaryKeyField[str]
 
 
+class NumberSortKeyModel(DatabaseModel):
+    player_id: IndexPrimaryKeyField[str]
+    number: IndexSecondaryKeyField[int]
+
+
+class DateSortKeyModel(DatabaseModel):
+    player_id: IndexPrimaryKeyField[str]
+    date: IndexSecondaryKeyField[datetime]
+
+
 class DoubleIndexModel(DatabaseModel):
     player_id: IndexPrimaryKeyField[str]
     type: IndexSecondaryKeyField[str]
     tier: IndexSecondaryKeyField[str]
     card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
-    added_at: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_names=["secondary-index"])
+    added_at: IndexSecondaryKeyField[datetime] = IndexSecondaryKeyField(index_names=["secondary-index"])
 
 
 class MultiIndexModel(DatabaseModel):
@@ -100,46 +111,16 @@ def test_create_my_awesome_model():
 
 
 def test_valid_sort_key():
-    class NumberSortKeyModel(DatabaseModel):
-        player_id: IndexPrimaryKeyField[str]
-        number: IndexSecondaryKeyField[int]
-
-    class DateSortKeyModel(DatabaseModel):
-        player_id: IndexPrimaryKeyField[str]
-        date: IndexSecondaryKeyField[datetime]
-
-    mock_dynamodb().start()
     my_table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
     )
-    dynamo = _dynamo_client()
-    _create_dynamodb_table(dynamo, my_table)
-    dynamo_table = dynamo.Table(my_table.name)
-    app = SingleTableApplication(table=my_table, models=[NumberSortKeyModel, DateSortKeyModel])
-
-    number_model = NumberSortKeyModel(id="foo", player_id="123", number=42)
-    app.put_item(number_model)
-    assert dynamo_table.get_item(Key={"id": number_model.id})["Item"] == {
-        "id": "foo",
-        "player_id": "123",
-        "number": 42,
-        "gsi_pk": "123",
-        "gsi_sk": 42,
-        "type": "NumberSortKeyModel",
-    }
-
-    date_model = DateSortKeyModel(id="foo_2", player_id="123", date="2023-09-10 12:00:00")
-    app.put_item(date_model)
-    assert dynamo_table.get_item(Key={"id": date_model.id})["Item"] == {
-        "id": "foo_2",
-        "player_id": "123",
-        "date": "2023-09-10 12:00:00",
-        "gsi_pk": "123",
-        "gsi_sk": "2023-09-10 12:00:00",
-        "type": "DateSortKeyModel",
-    }
+    SingleTableApplication(table=my_table, models=[MyAwesomeModel])
+    SingleTableApplication(table=my_table, models=[NumberSortKeyModel])
+    SingleTableApplication(table=my_table, models=[DateSortKeyModel])
+    SingleTableApplication(table=my_table, models=[DoubleIndexModel])
+    SingleTableApplication(table=my_table, models=[MultiIndexModel])
 
 
 def test_invalid_sort_key():
@@ -148,19 +129,32 @@ def test_invalid_sort_key():
         type: IndexSecondaryKeyField[str]
         number: IndexSecondaryKeyField[int]
 
-    mock_dynamodb().start()
-    my_table = Table(
+    table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
     )
-    dynamo = _dynamo_client()
-    _create_dynamodb_table(dynamo, my_table)
-    model = InvalidSortKeyModel(id="foo", player_id="123", type="InvalidSortKeyModel", number=42)
-    app = SingleTableApplication(table=my_table, models=[InvalidSortKeyModel])
     with pytest.raises(InvalidSortKeyException):
-        app.put_item(model)
-    mock_dynamodb().stop()
+        SingleTableApplication(table=table, models=[InvalidSortKeyModel])
+
+    class InvalidMultiIndexModel(DatabaseModel):
+        player_id: IndexPrimaryKeyField[str]
+        type: IndexSecondaryKeyField[str]
+        tier: IndexSecondaryKeyField[str]
+        card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
+        name: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_names=["secondary-index"])
+        added_at: IndexSecondaryKeyField[datetime] = IndexSecondaryKeyField(index_names=["secondary-index"])
+
+    table = Table(
+        name="my-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk"),
+            GSI(name="secondary-index", hash_key="gsi_pk_2", sort_key="gsi_sk_2"),
+        ],
+    )
+    with pytest.raises(InvalidSortKeyException):
+        SingleTableApplication(table=table, models=[InvalidMultiIndexModel])
 
 
 def test_multi_index_table():
@@ -192,11 +186,11 @@ def test_multi_index_table():
         "player_id": "123",
         "tier": "LEGENDARY",
         "card_template_id": "abc",
-        "added_at": "2023-09-10 12:00:00",
+        "added_at": 1694340000,
         "gsi_pk": "123",
         "gsi_sk": "DoubleIndexModel|LEGENDARY",
         "gsi_pk_2": "abc",
-        "gsi_sk_2": "DoubleIndexModel|2023-09-10 12:00:00",
+        "gsi_sk_2": 1694340000,
     }
     mock_dynamodb().stop()
 
