@@ -1,7 +1,9 @@
 from datetime import datetime
 
+import pytest
+
 from statikk.conditions import Equals, BeginsWith
-from statikk.engine import SingleTableApplication
+from statikk.engine import SingleTableApplication, InvalidIndexNameError
 from statikk.models import (
     DatabaseModel,
     IndexPrimaryKeyField,
@@ -34,6 +36,12 @@ class MultiIndexModel(DatabaseModel):
     player_id: IndexPrimaryKeyField[str]
     card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
     type: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_names=["main-index", "secondary-index"])
+
+
+class SomeOtherIndexModel(DatabaseModel):
+    player_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["my-awesome-index"])
+    type: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_name=["my-awesome-index"])
+    tier: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_name=["my-awesome-index"])
 
 
 def _dynamo_client():
@@ -206,9 +214,36 @@ def test_query_model_index():
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC")
     app.put_item(model_2)
     models = app.query_index(
-        index_name="main-index",
         hash_key=Equals("123"),
         range_key=BeginsWith("MyAwesomeModel"),
+        filter_condition=Attr("tier").eq("LEGENDARY"),
+        model_class=MyAwesomeModel,
+    )
+    assert len(models) == 1
+    assert models[0].id == model.id
+    assert models[0].type == model.type
+    assert models[0].tier == model.tier
+    mock_dynamodb().stop()
+
+
+def test_query_index_name_is_provided():
+    mock_dynamodb().start()
+    my_table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[GSI(name="my-awesome-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+    )
+    dynamo = _dynamo_client()
+    _create_dynamodb_table(dynamo, my_table)
+    model = SomeOtherIndexModel(id="foo", player_id="123", type="SomeOtherIndexModel", tier="LEGENDARY")
+    app = SingleTableApplication(table=my_table, models=[SomeOtherIndexModel])
+    app.put_item(model)
+    model_2 = SomeOtherIndexModel(id="foo-2", player_id="123", type="SomeOtherIndexModel", tier="EPIC")
+    app.put_item(model_2)
+    models = app.query_index(
+        index_name="my-awesome-index",
+        hash_key=Equals("123"),
+        range_key=BeginsWith("SomeOtherIndexModel"),
         filter_condition=Attr("tier").eq("LEGENDARY"),
         model_class=MyAwesomeModel,
     )
@@ -283,4 +318,25 @@ def test_batch_write():
     )
     assert len(models) == 0
 
+    mock_dynamodb().stop()
+
+
+def test_query_index_does_not_exist():
+    mock_dynamodb().start()
+    my_table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+    )
+    dynamo = _dynamo_client()
+    _create_dynamodb_table(dynamo, my_table)
+    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
+    with pytest.raises(InvalidIndexNameError) as e:
+        app.query_index(
+            hash_key=Equals("123"),
+            range_key=BeginsWith("foo"),
+            index_name="does-not-exist",
+            model_class=MyAwesomeModel,
+        )
+    assert e.value.args[0] == "The provided index name 'does-not-exist' is not configured on the table."
     mock_dynamodb().stop()
