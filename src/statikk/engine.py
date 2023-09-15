@@ -21,6 +21,10 @@ class InvalidIndexNameError(Exception):
     pass
 
 
+class IncorrectSortKeyError(Exception):
+    pass
+
+
 class SingleTableApplication:
     def __init__(self, table: Table, models: List[Type[DatabaseModel]]):
         self.table = table
@@ -67,9 +71,9 @@ class SingleTableApplication:
         if not index_filter:
             raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
         index = index_filter[0]
-        key_condition = hash_key.evaluate(index.hash_key)
+        key_condition = hash_key.evaluate(index.hash_key.name)
         if range_key is not None:
-            key_condition = key_condition & range_key.evaluate(index.sort_key)
+            key_condition = key_condition & range_key.evaluate(index.sort_key.name)
 
         query_params = {
             "IndexName": index_name,
@@ -153,15 +157,15 @@ class SingleTableApplication:
 
     def _serialize_value(self, value: Any):
         if isinstance(value, datetime):
-            return str(value)
+            return int(value.timestamp())
         return value
 
     def _set_index_fields(self, model: DatabaseModel | Type[DatabaseModel], idx: GSI):
         model_fields = model.model_fields
-        if idx.hash_key not in model_fields:
-            model_fields[idx.hash_key] = FieldInfo(annotation=str, default=None, required=False)
-        if idx.sort_key not in model_fields:
-            model_fields[idx.sort_key] = FieldInfo(annotation=str, default=None, required=False)
+        if idx.hash_key.name not in model_fields:
+            model_fields[idx.hash_key.name] = FieldInfo(annotation=idx.hash_key.type, default=None, required=False)
+        if idx.sort_key.name not in model_fields:
+            model_fields[idx.sort_key.name] = FieldInfo(annotation=idx.sort_key.type, default=None, required=False)
 
     def _compose_index_values(self, model: DatabaseModel, idx: GSI) -> Dict[str, Any]:
         model_fields = model.model_fields
@@ -169,29 +173,41 @@ class SingleTableApplication:
             field_name
             for field_name, field_info in model_fields.items()
             if field_info.annotation is not None
-            if set(field_info.annotation.__bases__).intersection({IndexPrimaryKeyField})
-            and idx.name in getattr(model, field_name).index_names
+            if field_info.annotation is IndexPrimaryKeyField and idx.name in getattr(model, field_name).index_names
         ][0]
         sort_key_fields = [
             field_name
             for field_name, field_info in model_fields.items()
             if field_info.annotation is not None
-            if set(field_info.annotation.__bases__).intersection({IndexSecondaryKeyField})
-            and idx.name in getattr(model, field_name).index_names
+            if field_info.annotation is IndexSecondaryKeyField and idx.name in getattr(model, field_name).index_names
         ]
-        if "type" not in sort_key_fields:
-            sort_key_fields.insert(0, "type")
 
         def _get_sort_key_value():
             if len(sort_key_fields) == 0:
                 return None
             if len(sort_key_fields) == 1:
-                return getattr(model, sort_key_fields[0]).value
-            return self.table.delimiter.join([str(getattr(model, field).value) for field in sort_key_fields])
+                value = getattr(model, sort_key_fields[0]).value
+                if type(value) is not idx.sort_key.type:
+                    raise IncorrectSortKeyError(
+                        f"Incorrect sort key type. Sort key type for sort key '{idx.sort_key.name}' should be: "
+                        + str(idx.sort_key.type)
+                        + " but got: "
+                        + str(type(value))
+                    )
+                value = value or idx.sort_key.default
+                return self._serialize_value(value)
+
+            if "type" not in sort_key_fields:
+                sort_key_fields.insert(0, "type")
+            sort_key_values: List[str] = []
+            for field in sort_key_fields:
+                value = getattr(model, field).value
+                sort_key_values.append(value)
+            return self.table.delimiter.join(sort_key_values)
 
         return {
-            idx.hash_key: getattr(model, hash_key_field).value,
-            idx.sort_key: _get_sort_key_value(),
+            idx.hash_key.name: getattr(model, hash_key_field).value,
+            idx.sort_key.name: _get_sort_key_value(),
         }
 
     def _perform_batch_write(self, put_items: List[DatabaseModel], delete_items: List[DatabaseModel]):
