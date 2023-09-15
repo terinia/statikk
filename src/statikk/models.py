@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, List, TypeVar, Generic, Any, Set, Type
+from typing import Optional, List, Generic, Any, Set, Type
 
 from pydantic import BaseModel, Field, model_serializer, model_validator
-from pydantic_core._pydantic_core import PydanticUndefined
 from pydantic.fields import FieldInfo
+from pydantic_core._pydantic_core import PydanticUndefined
+
+
+class Key(BaseModel):
+    name: str
+    type: Type = str
+    default: Optional[Any] = ""
 
 
 class GSI(BaseModel):
     name: str = "main-index"
-    hash_key: str
-    sort_key: Optional[str] = None
+    hash_key: Key
+    sort_key: Key
 
 
 class KeySchema(BaseModel):
@@ -26,23 +32,20 @@ class Table(BaseModel):
     delimiter: str = "|"
 
 
-T = TypeVar("T")
-
-
-class Index(BaseModel, Generic[T]):
-    value: Optional[T] = None
+class Index(BaseModel):
+    value: Optional[Any] = None
     index_names: Optional[List[str]] = ["main-index"]
 
     @model_serializer
-    def ser_model(self) -> T:
+    def ser_model(self) -> Any:
         return self.value
 
 
-class IndexPrimaryKeyField(Index[T], Generic[T]):
+class IndexPrimaryKeyField(Index):
     pass
 
 
-class IndexSecondaryKeyField(Index[T], Generic[T]):
+class IndexSecondaryKeyField(Index):
     pass
 
 
@@ -56,9 +59,8 @@ class DatabaseModel(BaseModel):
 
     @staticmethod
     def _is_index_field(field: FieldInfo) -> bool:
-        annotation_bases = set(field.annotation.__bases__) if field.annotation else {}
         index_types = {Index, IndexPrimaryKeyField, IndexSecondaryKeyField}
-        return len(index_types.intersection(annotation_bases)) > 0
+        return field.annotation in index_types
 
     @classmethod
     def _create_index_field_from_shorthand(cls, field: FieldInfo, value: str) -> FieldInfo:

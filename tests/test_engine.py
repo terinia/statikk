@@ -3,7 +3,11 @@ from datetime import datetime
 import pytest
 
 from statikk.conditions import Equals, BeginsWith
-from statikk.engine import SingleTableApplication, InvalidIndexNameError
+from statikk.engine import (
+    SingleTableApplication,
+    InvalidIndexNameError,
+    IncorrectSortKeyError,
+)
 from statikk.models import (
     DatabaseModel,
     IndexPrimaryKeyField,
@@ -11,6 +15,7 @@ from statikk.models import (
     Table,
     KeySchema,
     GSI,
+    Key,
 )
 from moto import mock_dynamodb
 import boto3
@@ -19,29 +24,29 @@ from boto3.dynamodb.conditions import Attr
 
 
 class MyAwesomeModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField[str]
-    type: IndexSecondaryKeyField[str]
-    tier: IndexSecondaryKeyField[str]
+    player_id: IndexPrimaryKeyField
+    type: IndexSecondaryKeyField
+    tier: IndexSecondaryKeyField
 
 
 class DoubleIndexModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField[str]
-    type: IndexSecondaryKeyField[str]
-    tier: IndexSecondaryKeyField[str]
-    card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
-    added_at: IndexSecondaryKeyField[datetime] = IndexSecondaryKeyField(index_names=["secondary-index"])
+    player_id: IndexPrimaryKeyField
+    type: IndexSecondaryKeyField
+    tier: IndexSecondaryKeyField
+    card_template_id: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["secondary-index"])
+    added_at: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["secondary-index"])
 
 
 class MultiIndexModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField[str]
-    card_template_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["secondary-index"])
-    type: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_names=["main-index", "secondary-index"])
+    player_id: IndexPrimaryKeyField
+    card_template_id: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["secondary-index"])
+    type: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["main-index", "secondary-index"])
 
 
 class SomeOtherIndexModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["my-awesome-index"])
-    type: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_name=["my-awesome-index"])
-    tier: IndexSecondaryKeyField[str] = IndexSecondaryKeyField(index_name=["my-awesome-index"])
+    player_id: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["my-awesome-index"])
+    type: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["my-awesome-index"])
+    tier: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["my-awesome-index"])
 
 
 def _dynamo_client():
@@ -54,15 +59,21 @@ def _create_dynamodb_table(dynamo, table):
         KeySchema=[{"AttributeName": table.key_schema.hash_key, "KeyType": "HASH"}],
         AttributeDefinitions=[
             {"AttributeName": table.key_schema.hash_key, "AttributeType": "S"},
-            {"AttributeName": table.indexes[0].hash_key, "AttributeType": "S"},
-            {"AttributeName": table.indexes[0].sort_key, "AttributeType": "S"},
+            {"AttributeName": table.indexes[0].hash_key.name, "AttributeType": "S"},
+            {"AttributeName": table.indexes[0].sort_key.name, "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
                 "IndexName": table.indexes[0].name,
                 "KeySchema": [
-                    {"AttributeName": table.indexes[0].hash_key, "KeyType": "HASH"},
-                    {"AttributeName": table.indexes[0].sort_key, "KeyType": "RANGE"},
+                    {
+                        "AttributeName": table.indexes[0].hash_key.name,
+                        "KeyType": "HASH",
+                    },
+                    {
+                        "AttributeName": table.indexes[0].sort_key.name,
+                        "KeyType": "RANGE",
+                    },
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             }
@@ -76,7 +87,13 @@ def test_create_my_awesome_model():
     my_table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
-        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)
@@ -111,8 +128,16 @@ def test_multi_index_table():
         name="my-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
-            GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk"),
-            GSI(name="secondary-index", hash_key="gsi_pk_2", sort_key="gsi_sk_2"),
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            ),
+            GSI(
+                name="secondary-index",
+                hash_key=Key(name="gsi_pk_2"),
+                sort_key=Key(name="gsi_sk_2", type=datetime),
+            ),
         ],
     )
     dynamo = _dynamo_client()
@@ -124,7 +149,7 @@ def test_multi_index_table():
         type="DoubleIndexModel",
         tier="LEGENDARY",
         card_template_id="abc",
-        added_at="2023-09-10 12:00:00",
+        added_at=datetime(2023, 9, 10, 12, 0, 0),
     )
     app = SingleTableApplication(table=table, models=[DoubleIndexModel])
     app.put_item(my_model)
@@ -134,13 +159,51 @@ def test_multi_index_table():
         "player_id": "123",
         "tier": "LEGENDARY",
         "card_template_id": "abc",
-        "added_at": "2023-09-10 12:00:00",
+        "added_at": 1694340000,
         "gsi_pk": "123",
         "gsi_sk": "DoubleIndexModel|LEGENDARY",
         "gsi_pk_2": "abc",
-        "gsi_sk_2": "DoubleIndexModel|2023-09-10 12:00:00",
+        "gsi_sk_2": 1694340000,
     }
     mock_dynamodb().stop()
+
+
+def test_incorrect_index_type():
+    mock_dynamodb().start()
+    table = Table(
+        name="my-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            ),
+            GSI(
+                name="secondary-index",
+                hash_key=Key(name="gsi_pk_2"),
+                sort_key=Key(name="gsi_sk_2", type=datetime),
+            ),
+        ],
+    )
+    dynamo = _dynamo_client()
+    _create_dynamodb_table(dynamo, table)
+    my_model = DoubleIndexModel(
+        id="foo",
+        player_id="123",
+        type="DoubleIndexModel",
+        tier="LEGENDARY",
+        card_template_id="abc",
+        added_at="2023-01-01 12:00:00",
+    )
+    app = SingleTableApplication(table=table, models=[DoubleIndexModel])
+
+    with pytest.raises(IncorrectSortKeyError) as e:
+        app.put_item(my_model)
+    assert (
+        e.value.args[0]
+        == f"Incorrect sort key type. Sort key type for sort key 'gsi_sk_2' should be: <class 'datetime.datetime'> but got: <class 'str'>"
+    )
 
 
 def test_multi_field_index():
@@ -149,8 +212,16 @@ def test_multi_field_index():
         name="my-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
-            GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk"),
-            GSI(name="secondary-index", hash_key="gsi_pk_2", sort_key="gsi_sk_2"),
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            ),
+            GSI(
+                name="secondary-index",
+                hash_key=Key(name="gsi_pk_2"),
+                sort_key=Key(name="gsi_sk_2"),
+            ),
         ],
     )
     dynamo = _dynamo_client()
@@ -178,8 +249,16 @@ def test_integration_get_item():
         name="my-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
-            GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk"),
-            GSI(name="secondary-index", hash_key="gsi_pk_2", sort_key="gsi_sk_2"),
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            ),
+            GSI(
+                name="secondary-index",
+                hash_key=Key(name="gsi_pk_2"),
+                sort_key=Key(name="gsi_sk_2"),
+            ),
         ],
     )
     dynamo = _dynamo_client()
@@ -204,7 +283,13 @@ def test_query_model_index():
     my_table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
-        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)
@@ -231,12 +316,18 @@ def test_query_index_name_is_provided():
     my_table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
-        indexes=[GSI(name="my-awesome-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+        indexes=[
+            GSI(
+                name="my-awesome-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)
-    model = SomeOtherIndexModel(id="foo", player_id="123", type="SomeOtherIndexModel", tier="LEGENDARY")
     app = SingleTableApplication(table=my_table, models=[SomeOtherIndexModel])
+    model = SomeOtherIndexModel(id="foo", player_id="123", type="SomeOtherIndexModel", tier="LEGENDARY")
     app.put_item(model)
     model_2 = SomeOtherIndexModel(id="foo-2", player_id="123", type="SomeOtherIndexModel", tier="EPIC")
     app.put_item(model_2)
@@ -245,7 +336,7 @@ def test_query_index_name_is_provided():
         hash_key=Equals("123"),
         range_key=BeginsWith("SomeOtherIndexModel"),
         filter_condition=Attr("tier").eq("LEGENDARY"),
-        model_class=MyAwesomeModel,
+        model_class=SomeOtherIndexModel,
     )
     assert len(models) == 1
     assert models[0].id == model.id
@@ -259,7 +350,13 @@ def test_batch_get_items():
     my_table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
-        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)
@@ -284,7 +381,13 @@ def test_batch_write():
     my_table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
-        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)
@@ -326,7 +429,13 @@ def test_query_index_does_not_exist():
     my_table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
-        indexes=[GSI(name="main-index", hash_key="gsi_pk", sort_key="gsi_sk")],
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, my_table)

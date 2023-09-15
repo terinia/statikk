@@ -9,8 +9,8 @@ from statikk.models import (
 
 def test_index_shorthand():
     class Foo(DatabaseModel):
-        type: IndexPrimaryKeyField[str]
-        player_id: IndexSecondaryKeyField[str]
+        type: IndexPrimaryKeyField
+        player_id: IndexSecondaryKeyField
 
     with patch("statikk.models.uuid.uuid4", return_value="123"):
         foo = Foo(player_id="abc")
@@ -23,7 +23,7 @@ def test_index_shorthand():
 
 def test_index_configuration():
     class FooNotMainIndex(DatabaseModel):
-        type: IndexPrimaryKeyField[str] = IndexPrimaryKeyField(index_names=["not-main-index"])
+        type: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["not-main-index"])
 
     foo = FooNotMainIndex(type="FooNotMainIndex")
     assert foo.type.value == "FooNotMainIndex"
