@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import List
 
 import pytest
 
@@ -41,6 +42,7 @@ class MultiIndexModel(DatabaseModel):
     player_id: IndexPrimaryKeyField
     card_template_id: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["secondary-index"])
     type: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["main-index", "secondary-index"])
+    values: List[int] = [1, 2, 3, 4]
 
 
 class SomeOtherIndexModel(DatabaseModel):
@@ -239,6 +241,7 @@ def test_multi_field_index():
         "id": "card-id",
         "player_id": "123",
         "type": "LEGENDARY",
+        "values": [1, 2, 3, 4],
     }
     mock_dynamodb().stop()
 

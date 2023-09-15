@@ -6,6 +6,7 @@ import boto3
 from botocore.config import Config
 from pydantic.fields import FieldInfo
 from boto3.dynamodb.conditions import ComparisonCondition
+from boto3.dynamodb.types import TypeDeserializer
 
 from statikk.conditions import Condition
 from statikk.models import (
@@ -144,25 +145,8 @@ class SingleTableApplication:
         return results
 
     def _convert_dynamodb_to_python(self, item) -> Dict[str, Any]:
-        result = {}
-        for key, value in item.items():
-            if isinstance(value, dict) and len(value) == 1:
-                dynamodb_type = list(value.keys())[0]
-                dynamodb_value = value[dynamodb_type]
-
-                if dynamodb_type == "S":
-                    result[key] = dynamodb_value
-                elif dynamodb_type == "N":
-                    result[key] = int(dynamodb_value)
-                elif dynamodb_type == "BOOL":
-                    result[key] = dynamodb_value
-                elif dynamodb_type == "L":
-                    result[key] = [self._convert_dynamodb_to_python(item) for item in dynamodb_value]
-                elif dynamodb_type == "M":
-                    result[key] = self._convert_dynamodb_to_python(dynamodb_value)
-            else:
-                result[key] = value
-        return result
+        deserializer = TypeDeserializer()
+        return {k: deserializer.deserialize(v) for k, v in item.items()}
 
     def batch_get_items(
         self, ids: List[str], model_class: Type[DatabaseModel], batch_size: int = 100
