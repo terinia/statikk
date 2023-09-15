@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, List, Generic, Any, Set, Type
+from typing import Optional, List, Any, Set, Type
 
 from pydantic import BaseModel, Field, model_serializer, model_validator
 from pydantic.fields import FieldInfo

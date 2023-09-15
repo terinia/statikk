@@ -46,14 +46,34 @@ class SingleTableApplication:
         )
         return dynamodb.Table(self.table.name)
 
-    def get_item(self, id: str, model_class: Type[DatabaseModel]):
-        return model_class(**self._get_dynamodb_table().get_item(Key={"id": id})["Item"])
+    def get_item(self, id: str, model_class: Type[DatabaseModel], sort_key: Optional[Any] = None):
+        """
+        Returns an item from the database by id, using the partition key of the table.
+        :param id: The id of the item to retrieve.
+        :param model_class: The model class to use to deserialize the item.
+        :param sort_key: The sort key of the item to retrieve. If the table does not have a sort key, this parameter should not be provided.
+        """
+        key = {self.table.key_schema.hash_key: id}
+        if sort_key:
+            key[self.table.key_schema.sort_key] = self._serialize_value(sort_key)
+        return model_class(**self._get_dynamodb_table().get_item(Key=key)["Item"])
 
     def put_item(self, model: DatabaseModel):
+        """
+        Puts an item into the database.
+
+        Before putting the item to the database, this method automatically constructs the index fields for the item,
+        based on the configured indexes on the table. If the item already has a value for the index field, the field's
+        value is going to be used instead.
+        """
         data = self._get_item_data(model)
         self._get_dynamodb_table().put_item(Item=data)
 
     def batch_write(self):
+        """
+        Returns a context manager for batch writing items to the database. This method handles all the buffering of the
+        batch operation and the construction of index fields for each item.
+        """
         return BatchWriteContext(self)
 
     def query_index(
@@ -64,6 +84,39 @@ class SingleTableApplication:
         filter_condition: Optional[ComparisonCondition] = None,
         index_name: Optional[str] = None,
     ):
+        """
+        Queries the database using the provided hash key and range key conditions. A filter condition can also be provided
+        using the filter_condition parameter. The method returns a list of items matching the query, deserialized into the
+        provided model_class parameter.
+
+        This method automatically constructs values for the index fields of the provided model_class, based on the configured
+        indexes on the table. If the model_class already has a value for the index field, the field's value is going to be used,
+        otherwise the value is going to be constructed based on the model's fields. If a type field is not provided on the model class
+        or the model instance, the type field is going to be set to the model class name. In case of string values, the values are
+        always prefixed with the type of the model to avoid collisions between different model types.
+
+        Example:
+            class Card(DatabaseModel):
+                id: str
+                player_id: IndexPrimaryKeyField
+                type: IndexSecondaryKeyField
+                tier: IndexSecondaryKeyField
+
+            table = Table(indexes=[GSI(hash_key=Key("gsi_pk"), sort_key=Key("gsi_sk"))])
+
+            The constructed index fields for the Card model are going to be:
+                gsi_pk: <player_id>
+                gsi_sk: card|<tier>
+
+            A setup like this allows for queries to select for all cards of a player with a specific tier, avoiding potential
+            collisions with models where the hash_key is also the player_id.
+
+        :param hash_key: The hash key condition to use for the query. See statikk.conditions.Condition for more information.
+        :param range_key: The range key condition to use for the query. See statikk.conditions.Condition for more information.
+        :param model_class: The model class to use to deserialize the items.
+        :param filter_condition: An optional filter condition to use for the query. See boto3.dynamodb.conditions.ComparisonCondition for more information.
+        :param index_name: The name of the index to use for the query. If not provided, the first index configured on the table is used.
+        """
         results = []
         if not index_name:
             index_name = self.table.indexes[0].name
@@ -147,6 +200,8 @@ class SingleTableApplication:
         for idx in self.table.indexes:
             index_fields = self._compose_index_values(item, idx)
             for key, value in index_fields.items():
+                if hasattr(item, key) and getattr(item, key) is not None:
+                    continue
                 if value is not None:
                     setattr(item, key, value)
             item.model_rebuild(force=True)

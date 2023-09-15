@@ -1,3 +1,15 @@
+"""
+This module contains the Condition class and its subclasses. These classes are used to construct expressions understood
+by DynamoDB to narrow down query results. Not to be confused with the ConditionExpression parameter, which is used to
+narrow down filter results and is not implemented in this library. This library relies on the boto3 library to handle
+the ConditionExpression filter_condition arguments.
+See https://boto3.amazonaws.com/v1/documentation/api/latest/reference/customizations/dynamodb.html#boto3.dynamodb.conditions.Attr
+for more information on filter expressions.
+
+Example usage of this module:
+    from statikk.conditions import Equals, BeginsWith
+    app.query(range_key=Equals("123"), hash_key=BeginsWith("abc"))
+"""
 from abc import ABC, abstractmethod
 from typing import Any
 
