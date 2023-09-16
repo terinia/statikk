@@ -128,7 +128,6 @@ class Table:
         :param filter_condition: An optional filter condition to use for the query. See boto3.dynamodb.conditions.ComparisonCondition for more information.
         :param index_name: The name of the index to use for the query. If not provided, the first index configured on the table is used.
         """
-        results = []
         if not index_name:
             index_name = self.indexes[0].name
         index_filter = [idx for idx in self.indexes if idx.name == index_name]
@@ -149,10 +148,8 @@ class Table:
 
         while last_evaluated_key:
             items = self._get_dynamodb_table().query(**query_params)
-            results.extend([model_class(**item) for item in items["Items"]])
+            yield from [model_class(**item) for item in items["Items"]]
             last_evaluated_key = items.get("LastEvaluatedKey", False)
-
-        return results
 
     def _convert_dynamodb_to_python(self, item) -> Dict[str, Any]:
         deserializer = TypeDeserializer()

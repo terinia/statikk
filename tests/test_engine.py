@@ -300,11 +300,13 @@ def test_query_model_index():
     table.put_item(model)
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC")
     table.put_item(model_2)
-    models = table.query_index(
-        hash_key=Equals("123"),
-        range_key=BeginsWith("MyAwesomeModel"),
-        filter_condition=Attr("tier").eq("LEGENDARY"),
-        model_class=MyAwesomeModel,
+    models = list(
+        table.query_index(
+            hash_key=Equals("123"),
+            range_key=BeginsWith("MyAwesomeModel"),
+            filter_condition=Attr("tier").eq("LEGENDARY"),
+            model_class=MyAwesomeModel,
+        )
     )
     assert len(models) == 1
     assert models[0].id == model.id
@@ -333,12 +335,14 @@ def test_query_index_name_is_provided():
     table.put_item(model)
     model_2 = SomeOtherIndexModel(id="foo-2", player_id="123", type="SomeOtherIndexModel", tier="EPIC")
     table.put_item(model_2)
-    models = table.query_index(
-        index_name="my-awesome-index",
-        hash_key=Equals("123"),
-        range_key=BeginsWith("SomeOtherIndexModel"),
-        filter_condition=Attr("tier").eq("LEGENDARY"),
-        model_class=SomeOtherIndexModel,
+    models = list(
+        table.query_index(
+            index_name="my-awesome-index",
+            hash_key=Equals("123"),
+            range_key=BeginsWith("SomeOtherIndexModel"),
+            filter_condition=Attr("tier").eq("LEGENDARY"),
+            model_class=SomeOtherIndexModel,
+        )
     )
     assert len(models) == 1
     assert models[0].id == model.id
@@ -401,12 +405,14 @@ def test_batch_write():
             model = MyAwesomeModel(id=f"foo_{i}", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
             batch.put(model)
 
-    models = table.query_index(
-        index_name="main-index",
-        hash_key=Equals("123"),
-        range_key=BeginsWith("MyAwesomeModel"),
-        filter_condition=Attr("tier").eq("LEGENDARY"),
-        model_class=MyAwesomeModel,
+    models = list(
+        table.query_index(
+            index_name="main-index",
+            hash_key=Equals("123"),
+            range_key=BeginsWith("MyAwesomeModel"),
+            filter_condition=Attr("tier").eq("LEGENDARY"),
+            model_class=MyAwesomeModel,
+        )
     )
     assert len(models) == 30
 
@@ -414,12 +420,14 @@ def test_batch_write():
         for model in models:
             batch.delete(model)
 
-    models = table.query_index(
-        index_name="main-index",
-        hash_key=Equals("123"),
-        range_key=BeginsWith("MyAwesomeModel"),
-        filter_condition=Attr("tier").eq("LEGENDARY"),
-        model_class=MyAwesomeModel,
+    models = list(
+        table.query_index(
+            index_name="main-index",
+            hash_key=Equals("123"),
+            range_key=BeginsWith("MyAwesomeModel"),
+            filter_condition=Attr("tier").eq("LEGENDARY"),
+            model_class=MyAwesomeModel,
+        )
     )
     assert len(models) == 0
 
@@ -443,11 +451,13 @@ def test_query_index_does_not_exist():
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, table)
     with pytest.raises(InvalidIndexNameError) as e:
-        table.query_index(
-            hash_key=Equals("123"),
-            range_key=BeginsWith("foo"),
-            index_name="does-not-exist",
-            model_class=MyAwesomeModel,
+        list(
+            table.query_index(
+                hash_key=Equals("123"),
+                range_key=BeginsWith("foo"),
+                index_name="does-not-exist",
+                model_class=MyAwesomeModel,
+            )
         )
     assert e.value.args[0] == "The provided index name 'does-not-exist' is not configured on the table."
     mock_dynamodb().stop()
