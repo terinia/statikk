@@ -85,7 +85,10 @@ class DatabaseModel(BaseModel):
             if "id" not in data:
                 data["id"] = str(uuid.uuid4())
             if "type" not in data:
-                data["type"] = cls.__name__
+                if cls.model_fields["type"].default is not PydanticUndefined:
+                    data["type"] = cls.model_fields["type"].default
+                else:
+                    data["type"] = cls.__name__
 
             for key, value in data.items():
                 field = cls.model_fields[key]

@@ -80,8 +80,8 @@ class SingleTableApplication:
     def query_index(
         self,
         hash_key: Condition,
-        range_key: Condition,
         model_class: Type[DatabaseModel],
+        range_key: Optional[Condition] = None,
         filter_condition: Optional[ComparisonCondition] = None,
         index_name: Optional[str] = None,
     ):
