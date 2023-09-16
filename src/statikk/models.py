@@ -25,13 +25,6 @@ class KeySchema(BaseModel):
     sort_key: Optional[str] = None
 
 
-class Table(BaseModel):
-    name: str
-    key_schema: KeySchema
-    indexes: List[GSI] = Field(default_factory=list)
-    delimiter: str = "|"
-
-
 class Index(BaseModel):
     value: Optional[Any] = None
     index_names: Optional[List[str]] = ["main-index"]

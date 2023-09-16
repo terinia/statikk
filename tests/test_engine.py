@@ -5,7 +5,7 @@ import pytest
 
 from statikk.conditions import Equals, BeginsWith
 from statikk.engine import (
-    SingleTableApplication,
+    Table,
     InvalidIndexNameError,
     IncorrectSortKeyError,
 )
@@ -13,7 +13,6 @@ from statikk.models import (
     DatabaseModel,
     IndexPrimaryKeyField,
     IndexSecondaryKeyField,
-    Table,
     KeySchema,
     GSI,
     Key,
@@ -86,7 +85,7 @@ def _create_dynamodb_table(dynamo, table):
 
 def test_create_my_awesome_model():
     mock_dynamodb().start()
-    my_table = Table(
+    table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
@@ -96,13 +95,13 @@ def test_create_my_awesome_model():
                 sort_key=Key(name="gsi_sk"),
             )
         ],
+        models=[MyAwesomeModel],
     )
     dynamo = _dynamo_client()
-    _create_dynamodb_table(dynamo, my_table)
-    dynamo_table = dynamo.Table(my_table.name)
+    _create_dynamodb_table(dynamo, table)
+    dynamo_table = dynamo.Table(table.name)
     model = MyAwesomeModel(id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
-    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
-    app.put_item(model)
+    table.put_item(model)
     assert dynamo_table.get_item(Key={"id": model.id})["Item"] == {
         "id": "foo",
         "player_id": "123",
@@ -112,7 +111,7 @@ def test_create_my_awesome_model():
         "gsi_sk": "MyAwesomeModel|LEGENDARY",
     }
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC")
-    app.put_item(model_2)
+    table.put_item(model_2)
     assert dynamo_table.get_item(Key={"id": model_2.id})["Item"] == {
         "id": "foo-2",
         "player_id": "123",
@@ -141,6 +140,7 @@ def test_multi_index_table():
                 sort_key=Key(name="gsi_sk_2", type=datetime),
             ),
         ],
+        models=[DoubleIndexModel],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, table)
@@ -153,8 +153,7 @@ def test_multi_index_table():
         card_template_id="abc",
         added_at=datetime(2023, 9, 10, 12, 0, 0),
     )
-    app = SingleTableApplication(table=table, models=[DoubleIndexModel])
-    app.put_item(my_model)
+    table.put_item(my_model)
     assert dynamo_table.get_item(Key={"id": my_model.id})["Item"] == {
         "id": "foo",
         "type": "DoubleIndexModel",
@@ -187,6 +186,7 @@ def test_incorrect_index_type():
                 sort_key=Key(name="gsi_sk_2", type=datetime),
             ),
         ],
+        models=[DoubleIndexModel],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, table)
@@ -198,10 +198,9 @@ def test_incorrect_index_type():
         card_template_id="abc",
         added_at="2023-01-01 12:00:00",
     )
-    app = SingleTableApplication(table=table, models=[DoubleIndexModel])
 
     with pytest.raises(IncorrectSortKeyError) as e:
-        app.put_item(my_model)
+        table.put_item(my_model)
     assert (
         e.value.args[0]
         == f"Incorrect sort key type. Sort key type for sort key 'gsi_sk_2' should be: <class 'datetime.datetime'> but got: <class 'str'>"
@@ -225,13 +224,13 @@ def test_multi_field_index():
                 sort_key=Key(name="gsi_sk_2"),
             ),
         ],
+        models=[MultiIndexModel],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, table)
     dynamo_table = dynamo.Table(table.name)
     model = MultiIndexModel(id="card-id", player_id="123", card_template_id="abc", type="LEGENDARY")
-    app = SingleTableApplication(table=table, models=[MultiIndexModel])
-    app.put_item(model)
+    table.put_item(model)
     assert dynamo_table.get_item(Key={"id": model.id})["Item"] == {
         "card_template_id": "abc",
         "gsi_pk": "123",
@@ -263,13 +262,13 @@ def test_integration_get_item():
                 sort_key=Key(name="gsi_sk_2"),
             ),
         ],
+        models=[MultiIndexModel],
     )
     dynamo = _dynamo_client()
     _create_dynamodb_table(dynamo, table)
     model = MultiIndexModel(id="card-id", player_id="123", card_template_id="abc", type="LEGENDARY")
-    app = SingleTableApplication(table=table, models=[MultiIndexModel])
-    app.put_item(model)
-    item = app.get_item("card-id", MultiIndexModel)
+    table.put_item(model)
+    item = table.get_item("card-id", MultiIndexModel)
     assert item.id == model.id
     assert item.player_id == model.player_id
     assert item.card_template_id == model.card_template_id
@@ -283,7 +282,7 @@ def test_integration_get_item():
 
 def test_query_model_index():
     mock_dynamodb().start()
-    my_table = Table(
+    table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
@@ -293,15 +292,15 @@ def test_query_model_index():
                 sort_key=Key(name="gsi_sk"),
             )
         ],
+        models=[MyAwesomeModel],
     )
     dynamo = _dynamo_client()
-    _create_dynamodb_table(dynamo, my_table)
+    _create_dynamodb_table(dynamo, table)
     model = MyAwesomeModel(id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
-    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
-    app.put_item(model)
+    table.put_item(model)
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", type="MyAwesomeModel", tier="EPIC")
-    app.put_item(model_2)
-    models = app.query_index(
+    table.put_item(model_2)
+    models = table.query_index(
         hash_key=Equals("123"),
         range_key=BeginsWith("MyAwesomeModel"),
         filter_condition=Attr("tier").eq("LEGENDARY"),
@@ -316,7 +315,7 @@ def test_query_model_index():
 
 def test_query_index_name_is_provided():
     mock_dynamodb().start()
-    my_table = Table(
+    table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
@@ -326,15 +325,15 @@ def test_query_index_name_is_provided():
                 sort_key=Key(name="gsi_sk"),
             )
         ],
+        models=[SomeOtherIndexModel],
     )
     dynamo = _dynamo_client()
-    _create_dynamodb_table(dynamo, my_table)
-    app = SingleTableApplication(table=my_table, models=[SomeOtherIndexModel])
+    _create_dynamodb_table(dynamo, table)
     model = SomeOtherIndexModel(id="foo", player_id="123", type="SomeOtherIndexModel", tier="LEGENDARY")
-    app.put_item(model)
+    table.put_item(model)
     model_2 = SomeOtherIndexModel(id="foo-2", player_id="123", type="SomeOtherIndexModel", tier="EPIC")
-    app.put_item(model_2)
-    models = app.query_index(
+    table.put_item(model_2)
+    models = table.query_index(
         index_name="my-awesome-index",
         hash_key=Equals("123"),
         range_key=BeginsWith("SomeOtherIndexModel"),
@@ -350,7 +349,7 @@ def test_query_index_name_is_provided():
 
 def test_batch_get_items():
     mock_dynamodb().start()
-    my_table = Table(
+    table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
@@ -360,15 +359,15 @@ def test_batch_get_items():
                 sort_key=Key(name="gsi_sk"),
             )
         ],
+        models=[MyAwesomeModel],
     )
     dynamo = _dynamo_client()
-    _create_dynamodb_table(dynamo, my_table)
-    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
+    _create_dynamodb_table(dynamo, table)
     model = MyAwesomeModel(id="foo", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
-    app.put_item(model)
-    app.put_item(model_2)
-    models = app.batch_get_items(["foo", "foo-2"], MyAwesomeModel, batch_size=1)
+    table.put_item(model)
+    table.put_item(model_2)
+    models = table.batch_get_items(["foo", "foo-2"], MyAwesomeModel, batch_size=1)
     assert len(models) == 2
     assert models[0].id == model.id
     assert models[0].type == model.type
@@ -381,7 +380,7 @@ def test_batch_get_items():
 
 def test_batch_write():
     mock_dynamodb().start()
-    my_table = Table(
+    table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
@@ -391,18 +390,18 @@ def test_batch_write():
                 sort_key=Key(name="gsi_sk"),
             )
         ],
+        models=[MyAwesomeModel],
     )
     dynamo = _dynamo_client()
-    _create_dynamodb_table(dynamo, my_table)
-    dynamo.Table(my_table.name)
-    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
+    _create_dynamodb_table(dynamo, table)
+    dynamo.Table(table.name)
 
-    with app.batch_write() as batch:
+    with table.batch_write() as batch:
         for i in range(30):
             model = MyAwesomeModel(id=f"foo_{i}", player_id="123", type="MyAwesomeModel", tier="LEGENDARY")
             batch.put(model)
 
-    models = app.query_index(
+    models = table.query_index(
         index_name="main-index",
         hash_key=Equals("123"),
         range_key=BeginsWith("MyAwesomeModel"),
@@ -411,11 +410,11 @@ def test_batch_write():
     )
     assert len(models) == 30
 
-    with app.batch_write() as batch:
+    with table.batch_write() as batch:
         for model in models:
             batch.delete(model)
 
-    models = app.query_index(
+    models = table.query_index(
         index_name="main-index",
         hash_key=Equals("123"),
         range_key=BeginsWith("MyAwesomeModel"),
@@ -429,7 +428,7 @@ def test_batch_write():
 
 def test_query_index_does_not_exist():
     mock_dynamodb().start()
-    my_table = Table(
+    table = Table(
         name="my-dynamodb-table",
         key_schema=KeySchema(hash_key="id"),
         indexes=[
@@ -439,12 +438,12 @@ def test_query_index_does_not_exist():
                 sort_key=Key(name="gsi_sk"),
             )
         ],
+        models=[MyAwesomeModel],
     )
     dynamo = _dynamo_client()
-    _create_dynamodb_table(dynamo, my_table)
-    app = SingleTableApplication(table=my_table, models=[MyAwesomeModel])
+    _create_dynamodb_table(dynamo, table)
     with pytest.raises(InvalidIndexNameError) as e:
-        app.query_index(
+        table.query_index(
             hash_key=Equals("123"),
             range_key=BeginsWith("foo"),
             index_name="does-not-exist",

@@ -10,11 +10,11 @@ from boto3.dynamodb.types import TypeDeserializer
 
 from statikk.conditions import Condition
 from statikk.models import (
-    Table,
     DatabaseModel,
     GSI,
     IndexPrimaryKeyField,
     IndexSecondaryKeyField,
+    KeySchema,
 )
 
 
@@ -26,11 +26,21 @@ class IncorrectSortKeyError(Exception):
     pass
 
 
-class SingleTableApplication:
-    def __init__(self, table: Table, models: List[Type[DatabaseModel]]):
-        self.table = table
+class Table:
+    def __init__(
+        self,
+        name: str,
+        models: List[Type[DatabaseModel]],
+        key_schema: KeySchema,
+        indexes: List[GSI] = Optional[None],
+        delimiter: str = "|",
+    ):
+        self.name = name
+        self.key_schema = key_schema
+        self.indexes = indexes or []
+        self.delimiter = delimiter
         self.models = models
-        for idx in self.table.indexes:
+        for idx in self.indexes:
             for model in self.models:
                 self._set_index_fields(model, idx)
 
@@ -45,7 +55,7 @@ class SingleTableApplication:
             "dynamodb",
             config=Config(region_name=os.environ.get("AWS_DEFAULT_REGION", "eu-west-1")),
         )
-        return dynamodb.Table(self.table.name)
+        return dynamodb.Table(self.name)
 
     def get_item(self, id: str, model_class: Type[DatabaseModel], sort_key: Optional[Any] = None):
         """
@@ -54,9 +64,9 @@ class SingleTableApplication:
         :param model_class: The model class to use to deserialize the item.
         :param sort_key: The sort key of the item to retrieve. If the table does not have a sort key, this parameter should not be provided.
         """
-        key = {self.table.key_schema.hash_key: id}
+        key = {self.key_schema.hash_key: id}
         if sort_key:
-            key[self.table.key_schema.sort_key] = self._serialize_value(sort_key)
+            key[self.key_schema.sort_key] = self._serialize_value(sort_key)
         return model_class(**self._get_dynamodb_table().get_item(Key=key)["Item"])
 
     def put_item(self, model: DatabaseModel):
@@ -120,8 +130,8 @@ class SingleTableApplication:
         """
         results = []
         if not index_name:
-            index_name = self.table.indexes[0].name
-        index_filter = [idx for idx in self.table.indexes if idx.name == index_name]
+            index_name = self.indexes[0].name
+        index_filter = [idx for idx in self.indexes if idx.name == index_name]
         if not index_filter:
             raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
         index = index_filter[0]
@@ -159,7 +169,7 @@ class SingleTableApplication:
 
         for batch in id_batches:
             request_items = {
-                self.table.name: {
+                self.name: {
                     "Keys": [{"id": {"S": id}} for id in batch],
                 }
             }
@@ -168,12 +178,12 @@ class SingleTableApplication:
                 response = dynamodb.batch_get_item(RequestItems=request_items)
 
                 if "UnprocessedKeys" in response and response["UnprocessedKeys"]:
-                    request_items = response["UnprocessedKeys"][self.table.name]
+                    request_items = response["UnprocessedKeys"][self.name]
                 else:
                     results.extend(
                         [
                             model_class(**self._convert_dynamodb_to_python(item))
-                            for item in response["Responses"][self.table.name]
+                            for item in response["Responses"][self.name]
                         ]
                     )
                     break
@@ -181,7 +191,7 @@ class SingleTableApplication:
         return results
 
     def _get_item_data(self, item: DatabaseModel):
-        for idx in self.table.indexes:
+        for idx in self.indexes:
             index_fields = self._compose_index_values(item, idx)
             for key, value in index_fields.items():
                 if hasattr(item, key) and getattr(item, key) is not None:
@@ -242,7 +252,7 @@ class SingleTableApplication:
             for field in sort_key_fields:
                 value = getattr(model, field).value
                 sort_key_values.append(value)
-            return self.table.delimiter.join(sort_key_values)
+            return self.delimiter.join(sort_key_values)
 
         return {
             idx.hash_key.name: getattr(model, hash_key_field).value,
@@ -269,8 +279,8 @@ class SingleTableApplication:
 
 
 class BatchWriteContext:
-    def __init__(self, app: SingleTableApplication):
-        self._app = app
+    def __init__(self, app: Table):
+        self._table = app
         self._put_items: List[DatabaseModel] = []
         self._delete_items: List[DatabaseModel] = []
 
@@ -284,4 +294,4 @@ class BatchWriteContext:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._app._perform_batch_write(self._put_items, self._delete_items)
+        self._table._perform_batch_write(self._put_items, self._delete_items)
