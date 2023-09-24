@@ -1,14 +1,15 @@
 import os
 from datetime import datetime
-from typing import Any, Dict, Type, Optional, List
+from typing import Any, Dict, Type, Optional, List, Union
 
 import boto3
 from botocore.config import Config
 from pydantic.fields import FieldInfo
-from boto3.dynamodb.conditions import ComparisonCondition
+from boto3.dynamodb.conditions import ComparisonCondition, Key
 from boto3.dynamodb.types import TypeDeserializer
 
-from statikk.conditions import Condition
+from statikk.conditions import Condition, Equals
+from statikk.expressions import UpdateExpressionBuilder
 from statikk.models import (
     DatabaseModel,
     GSI,
@@ -26,6 +27,10 @@ class IncorrectSortKeyError(Exception):
     pass
 
 
+class ItemNotFoundError(Exception):
+    pass
+
+
 class Table:
     def __init__(
         self,
@@ -34,15 +39,18 @@ class Table:
         key_schema: KeySchema,
         indexes: List[GSI] = Optional[None],
         delimiter: str = "|",
+        billing_mode: str = "PAY_PER_REQUEST",
     ):
         self.name = name
         self.key_schema = key_schema
         self.indexes = indexes or []
         self.delimiter = delimiter
         self.models = models
+        self.billing_mode = billing_mode
         for idx in self.indexes:
             for model in self.models:
                 self._set_index_fields(model, idx)
+                model.set_table_ref(self)
 
     def _dynamodb_client(self):
         return boto3.client(
@@ -57,6 +65,95 @@ class Table:
         )
         return dynamodb.Table(self.name)
 
+    def _to_dynamodb_type(self, type: Any):
+        if type is str:
+            return "S"
+        if type is int:
+            return "N"
+        if type is datetime:
+            return "N"
+        if type is float:
+            return "N"
+        if type is bool:
+            return "BOOL"
+        if type is list:
+            return "L"
+        if type is dict:
+            return "M"
+        if type is None:
+            return "NULL"
+        raise ValueError(f"Unsupported type: {type}.")
+
+    def create(self, aws_region: Optional[str] = None):
+        """Creates a DynamoDB table from the specified definition.
+
+        This method only supports a subset of all available configuration values on DynamoDB tables.
+        It is recommended that you manage your DynamoDb table outside the scope of your application, using CloudFormation or Terraform.
+
+        This method is mostly here to provide a shorthand for boostrapping an in-memory DynamoDb table mock
+        in moto-based unit and integration tests.
+        """
+        region = aws_region or os.environ.get("AWS_DEFAULT_REGION")
+        if not region:
+            raise ValueError(
+                "AWS region not specified. Please provide a region or set the AWS_DEFAULT_REGION environment variable."
+            )
+        hash_key_attribute_definitions = [
+            {
+                "AttributeName": index.hash_key.name,
+                "AttributeType": self._to_dynamodb_type(index.hash_key.type),
+            }
+            for index in self.indexes
+        ]
+        sort_key_attribute_definitions = [
+            {
+                "AttributeName": index.sort_key.name,
+                "AttributeType": self._to_dynamodb_type(index.sort_key.type),
+            }
+            for index in self.indexes
+        ]
+        global_secondary_indexes = [
+            {
+                "IndexName": index.name,
+                "KeySchema": [
+                    {
+                        "AttributeName": index.hash_key.name,
+                        "KeyType": "HASH",
+                    },
+                    {
+                        "AttributeName": index.sort_key.name,
+                        "KeyType": "RANGE",
+                    },
+                ],
+                "Projection": {"ProjectionType": index.projection_type},
+            }
+            for index in self.indexes
+        ]
+        key_schema = [{"AttributeName": self.key_schema.hash_key, "KeyType": "HASH"}]
+        if self.key_schema.sort_key:
+            key_schema.append({"AttributeName": self.key_schema.sort_key, "KeyType": "RANGE"})
+        self._dynamodb_client().create_table(
+            TableName=self.name,
+            KeySchema=key_schema,
+            AttributeDefinitions=[{"AttributeName": self.key_schema.hash_key, "AttributeType": "S"}]
+            + hash_key_attribute_definitions
+            + sort_key_attribute_definitions,
+            GlobalSecondaryIndexes=global_secondary_indexes,
+            BillingMode=self.billing_mode,
+        )
+
+    def delete(self):
+        """Deletes the DynamoDB table."""
+        self._dynamodb_client().delete_table(TableName=self.name)
+
+    def delete_item(self, id: str):
+        """
+        Deletes an item from the database by id, using the partition key of the table.
+        :param id: The id of the item to delete.
+        """
+        key = {self.key_schema.hash_key: id}
+        self._get_dynamodb_table().delete_item(Key=key)
+
     def get_item(self, id: str, model_class: Type[DatabaseModel], sort_key: Optional[Any] = None):
         """
         Returns an item from the database by id, using the partition key of the table.
@@ -67,38 +164,16 @@ class Table:
         key = {self.key_schema.hash_key: id}
         if sort_key:
             key[self.key_schema.sort_key] = self._serialize_value(sort_key)
-        return model_class(**self._get_dynamodb_table().get_item(Key=key)["Item"])
+        raw_data = self._get_dynamodb_table().get_item(Key=key)
+        if "Item" not in raw_data:
+            raise ItemNotFoundError(f"{model_class} with id '{id}' not found.")
+        data = raw_data["Item"]
+        del data["type"]
+        return model_class(**data)
 
-    def put_item(self, model: DatabaseModel):
+    def put_item(self, model: DatabaseModel) -> DatabaseModel:
         """
         Puts an item into the database.
-
-        Before putting the item to the database, this method automatically constructs the index fields for the item,
-        based on the configured indexes on the table. If the item already has a value for the index field, the field's
-        value is going to be used instead.
-        """
-        data = self._get_item_data(model)
-        self._get_dynamodb_table().put_item(Item=data)
-
-    def batch_write(self):
-        """
-        Returns a context manager for batch writing items to the database. This method handles all the buffering of the
-        batch operation and the construction of index fields for each item.
-        """
-        return BatchWriteContext(self)
-
-    def query_index(
-        self,
-        hash_key: Condition,
-        model_class: Type[DatabaseModel],
-        range_key: Optional[Condition] = None,
-        filter_condition: Optional[ComparisonCondition] = None,
-        index_name: Optional[str] = None,
-    ):
-        """
-        Queries the database using the provided hash key and range key conditions. A filter condition can also be provided
-        using the filter_condition parameter. The method returns a list of items matching the query, deserialized into the
-        provided model_class parameter.
 
         This method automatically constructs values for the index fields of the provided model_class, based on the configured
         indexes on the table. If the model_class already has a value for the index field, the field's value is going to be used,
@@ -122,12 +197,70 @@ class Table:
             A setup like this allows for queries to select for all cards of a player with a specific tier, avoiding potential
             collisions with models where the hash_key is also the player_id.
 
+
+        Returns the enriched database model instance.
+        """
+        data = self._serialize_item(model)
+        self._get_dynamodb_table().put_item(Item=data)
+        del data["type"]
+        for key, value in data.items():
+            data[key] = self._deserialize_value(value, model.model_fields[key])
+        return type(model)(**data)
+
+    def update_item(
+        self,
+        hash_key: str,
+        update_builder: UpdateExpressionBuilder,
+        range_key: Optional[str] = None,
+    ):
+        (
+            update_expression,
+            expression_attribute_values,
+            expression_attribute_names,
+        ) = update_builder.build()
+        key = {self.key_schema.hash_key: hash_key}
+        if range_key:
+            key[self.key_schema.sort_key] = range_key
+
+        request = {
+            "Key": key,
+            "UpdateExpression": update_expression,
+            "ExpressionAttributeValues": expression_attribute_values,
+        }
+        if expression_attribute_names:
+            request["ExpressionAttributeNames"] = expression_attribute_names
+
+        response = self._get_dynamodb_table().update_item(**request)
+        return response
+
+    def batch_write(self):
+        """
+        Returns a context manager for batch writing items to the database. This method handles all the buffering of the
+        batch operation and the construction of index fields for each item.
+        """
+        return BatchWriteContext(self)
+
+    def query_index(
+        self,
+        hash_key: Union[Condition | str],
+        model_class: Type[DatabaseModel],
+        range_key: Optional[Condition] = None,
+        filter_condition: Optional[ComparisonCondition] = None,
+        index_name: Optional[str] = None,
+    ):
+        """
+        Queries the database using the provided hash key and range key conditions. A filter condition can also be provided
+        using the filter_condition parameter. The method returns a list of items matching the query, deserialized into the
+        provided model_class parameter.
+
         :param hash_key: The hash key condition to use for the query. See statikk.conditions.Condition for more information.
         :param range_key: The range key condition to use for the query. See statikk.conditions.Condition for more information.
         :param model_class: The model class to use to deserialize the items.
         :param filter_condition: An optional filter condition to use for the query. See boto3.dynamodb.conditions.ComparisonCondition for more information.
         :param index_name: The name of the index to use for the query. If not provided, the first index configured on the table is used.
         """
+        if isinstance(hash_key, str):
+            hash_key = Equals(hash_key)
         if not index_name:
             index_name = self.indexes[0].name
         index_filter = [idx for idx in self.indexes if idx.name == index_name]
@@ -136,6 +269,7 @@ class Table:
         index = index_filter[0]
         key_condition = hash_key.evaluate(index.hash_key.name)
         if range_key is not None:
+            range_key.enrich(model_class=model_class)
             key_condition = key_condition & range_key.evaluate(index.sort_key.name)
 
         query_params = {
@@ -148,7 +282,7 @@ class Table:
 
         while last_evaluated_key:
             items = self._get_dynamodb_table().query(**query_params)
-            yield from [model_class(**item) for item in items["Items"]]
+            yield from [model_class(**self._remove_type_field_from_item(item)) for item in items["Items"]]
             last_evaluated_key = items.get("LastEvaluatedKey", False)
 
     def _convert_dynamodb_to_python(self, item) -> Dict[str, Any]:
@@ -179,7 +313,7 @@ class Table:
                 else:
                     results.extend(
                         [
-                            model_class(**self._convert_dynamodb_to_python(item))
+                            model_class(**self._convert_dynamodb_to_python(self._remove_type_field_from_item(item)))
                             for item in response["Responses"][self.name]
                         ]
                     )
@@ -187,7 +321,7 @@ class Table:
 
         return results
 
-    def _get_item_data(self, item: DatabaseModel):
+    def _prepare_model_data(self, item: DatabaseModel) -> Dict[str, Any]:
         for idx in self.indexes:
             index_fields = self._compose_index_values(item, idx)
             for key, value in index_fields.items():
@@ -196,15 +330,35 @@ class Table:
                 if value is not None:
                     setattr(item, key, value)
             item.model_rebuild(force=True)
-        data = item.model_dump()
+        return item.model_dump()
+
+    def _serialize_item(self, item: DatabaseModel):
+        data = self._prepare_model_data(item)
         for key, value in data.items():
             data[key] = self._serialize_value(value)
+        data["type"] = item.type()
         return data
+
+    def _deserialize_item(self, item: DatabaseModel):
+        data = self._prepare_model_data(item)
+        for key, value in data.items():
+            data[key] = self._deserialize_value(value, item.model_fields[key].annotation)
+        data["type"] = item.type()
+        return data
+
+    def _deserialize_value(self, value: Any, annotation: Any):
+        if annotation is datetime:
+            return datetime.fromtimestamp(value)
+        return value
 
     def _serialize_value(self, value: Any):
         if isinstance(value, datetime):
             return int(value.timestamp())
         return value
+
+    def _remove_type_field_from_item(self, item: Dict[str, Any]):
+        del item["type"]
+        return item
 
     def _set_index_fields(self, model: DatabaseModel | Type[DatabaseModel], idx: GSI):
         model_fields = model.model_fields
@@ -220,7 +374,10 @@ class Table:
             for field_name, field_info in model_fields.items()
             if field_info.annotation is not None
             if field_info.annotation is IndexPrimaryKeyField and idx.name in getattr(model, field_name).index_names
-        ][0]
+        ]
+        if len(hash_key_field) == 0 and model.type_is_primary_key():
+            hash_key_field.append(model.type())
+        hash_key_field = hash_key_field[0]
         sort_key_fields = [
             field_name
             for field_name, field_info in model_fields.items()
@@ -229,9 +386,9 @@ class Table:
         ]
 
         def _get_sort_key_value():
-            if len(sort_key_fields) == 0:
-                return None
-            if len(sort_key_fields) == 1:
+            if len(sort_key_fields) == 0 and model.include_type_in_sort_key():
+                return model.type()
+            if idx.sort_key.type is not str:
                 value = getattr(model, sort_key_fields[0]).value
                 if type(value) is not idx.sort_key.type:
                     raise IncorrectSortKeyError(
@@ -243,16 +400,23 @@ class Table:
                 value = value or idx.sort_key.default
                 return self._serialize_value(value)
 
-            if "type" not in sort_key_fields:
-                sort_key_fields.insert(0, "type")
             sort_key_values: List[str] = []
+            if model.include_type_in_sort_key() and model.type() not in sort_key_values:
+                sort_key_values.append(model.type())
+
             for field in sort_key_fields:
                 value = getattr(model, field).value
                 sort_key_values.append(value)
             return self.delimiter.join(sort_key_values)
 
+        def _get_hash_key_value():
+            if hash_key_field == model.type():
+                return model.type()
+            else:
+                return getattr(model, hash_key_field).value
+
         return {
-            idx.hash_key.name: getattr(model, hash_key_field).value,
+            idx.hash_key.name: _get_hash_key_value(),
             idx.sort_key.name: _get_sort_key_value(),
         }
 
@@ -265,13 +429,13 @@ class Table:
         if len(put_items) > 0:
             with dynamodb_table.batch_writer() as batch:
                 for item in put_items:
-                    data = self._get_item_data(item)
+                    data = self._serialize_item(item)
                     batch.put_item(Item=data)
 
         if len(delete_items) > 0:
             with dynamodb_table.batch_writer() as batch:
                 for item in delete_items:
-                    data = self._get_item_data(item)
+                    data = self._serialize_item(item)
                     batch.delete_item(Key=data)
 
 
