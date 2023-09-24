@@ -171,6 +171,8 @@ class Table:
             raise ItemNotFoundError(f"{model_class} with id '{id}' not found.")
         data = raw_data["Item"]
         del data["type"]
+        for key, value in data.items():
+            data[key] = self._deserialize_value(value, model_class.model_fields[key])
         return model_class(**data)
 
     def put_item(self, model: DatabaseModel) -> DatabaseModel:
@@ -286,7 +288,7 @@ class Table:
 
         while last_evaluated_key:
             items = self._get_dynamodb_table().query(**query_params)
-            yield from [model_class(**self._remove_type_field_from_item(item)) for item in items["Items"]]
+            yield from [model_class(**item) for item in items["Items"]]
             last_evaluated_key = items.get("LastEvaluatedKey", False)
 
     def scan(
@@ -308,7 +310,7 @@ class Table:
 
         while last_evaluated_key:
             items = self._get_dynamodb_table().scan(**query_params)
-            yield from [model_class(**self._remove_type_field_from_item(item)) for item in items["Items"]]
+            yield from [model_class(**item) for item in items["Items"]]
             last_evaluated_key = items.get("LastEvaluatedKey", False)
 
     def _convert_dynamodb_to_python(self, item) -> Dict[str, Any]:
@@ -339,7 +341,7 @@ class Table:
                 else:
                     results.extend(
                         [
-                            model_class(**self._convert_dynamodb_to_python(self._remove_type_field_from_item(item)))
+                            model_class(**self._convert_dynamodb_to_python(item))
                             for item in response["Responses"][self.name]
                         ]
                     )
@@ -365,26 +367,15 @@ class Table:
         data["type"] = item.model_type()
         return data
 
-    def _deserialize_item(self, item: DatabaseModel):
-        data = self._prepare_model_data(item)
-        for key, value in data.items():
-            data[key] = self._deserialize_value(value, item.model_fields[key].annotation)
-        data["type"] = item.model_type()
-        return data
-
     def _deserialize_value(self, value: Any, annotation: Any):
-        if annotation is datetime:
-            return datetime.fromtimestamp(value)
+        if annotation is datetime or "annotation=datetime" in str(annotation):
+            return datetime.fromtimestamp(int(value))
         return value
 
     def _serialize_value(self, value: Any):
         if isinstance(value, datetime):
             return int(value.timestamp())
         return value
-
-    def _remove_type_field_from_item(self, item: Dict[str, Any]):
-        del item["type"]
-        return item
 
     def _set_index_fields(self, model: DatabaseModel | Type[DatabaseModel], idx: GSI):
         model_fields = model.model_fields
