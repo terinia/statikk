@@ -8,7 +8,7 @@ from pydantic.fields import FieldInfo
 from boto3.dynamodb.conditions import ComparisonCondition, Key
 from boto3.dynamodb.types import TypeDeserializer
 
-from statikk.conditions import Condition, Equals
+from statikk.conditions import Condition, Equals, BeginsWith
 from statikk.expressions import UpdateExpressionBuilder
 from statikk.models import (
     DatabaseModel,
@@ -268,9 +268,11 @@ class Table:
             raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
         index = index_filter[0]
         key_condition = hash_key.evaluate(index.hash_key.name)
-        if range_key is not None:
-            range_key.enrich(model_class=model_class)
-            key_condition = key_condition & range_key.evaluate(index.sort_key.name)
+        if range_key is None:
+            range_key = BeginsWith(model_class.type())
+
+        range_key.enrich(model_class=model_class)
+        key_condition = key_condition & range_key.evaluate(index.sort_key.name)
 
         query_params = {
             "IndexName": index_name,

@@ -2,15 +2,6 @@
     :alt: Statikk
     :align: center
 
-.. |br| raw:: html
-
-  <br/>
-
-
-|br|
-Statikk is a Pythonic Single Table Application library for DynamoDB.
-
-
 We built this library because we got fed up with all the boilerplate we needed to write to use DynamoDB in a Single Table Application architecture.
 We were originally using `PynamoDB <https://github.com/pynamodb/PynamoDB>`_ , but we found it to be too verbose for our liking.
 
@@ -70,6 +61,8 @@ Basic Usage
       my_model.gsi_pk # returns "123"
       my_model.gsi_sk # returns "MyAwesomeModel|gold"
       my_model.delete() # Delete a model
+
+See `the usage docs for more <https://github.com/terinia/statikk/blob/main/docs/usage.rst>`_
 
 =================
 Features
