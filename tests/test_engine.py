@@ -613,3 +613,27 @@ def test_update_add_attribute():
     item = table.get_item("foo", MyAwesomeModel)
     assert item.name == "FooFoo"
     mock_dynamodb().stop()
+
+
+def test_scan():
+    mock_dynamodb().start()
+    table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
+        models=[MyAwesomeModel],
+    )
+    _create_dynamodb_table(table)
+    model = MyAwesomeModel(id="foo", player_id="123", tier="LEGENDARY", name="FooFoo", values={1, 2, 3, 4})
+    model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="EPIC", name="BarBar")
+    model.save()
+    model_2.save()
+    items = list(MyAwesomeModel.scan())
+    assert len(items) == 2
+    mock_dynamodb().stop()

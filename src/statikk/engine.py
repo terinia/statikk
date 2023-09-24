@@ -285,6 +285,28 @@ class Table:
             yield from [model_class(**self._remove_type_field_from_item(item)) for item in items["Items"]]
             last_evaluated_key = items.get("LastEvaluatedKey", False)
 
+    def scan(
+        self,
+        model_class: Type[DatabaseModel],
+        filter_condition: Optional[ComparisonCondition] = None,
+    ):
+        """
+        Scans the database for items matching the provided filter condition. The method returns a list of items matching
+        the query, deserialized into the provided model_class parameter.
+
+        :param model_class: The model class to use to deserialize the items.
+        :param filter_condition: An optional filter condition to use for the query. See boto3.dynamodb.conditions.ComparisonCondition for more information.
+        """
+        query_params = {}
+        if filter_condition:
+            query_params["FilterExpression"] = filter_condition
+        last_evaluated_key = True
+
+        while last_evaluated_key:
+            items = self._get_dynamodb_table().scan(**query_params)
+            yield from [model_class(**self._remove_type_field_from_item(item)) for item in items["Items"]]
+            last_evaluated_key = items.get("LastEvaluatedKey", False)
+
     def _convert_dynamodb_to_python(self, item) -> Dict[str, Any]:
         deserializer = TypeDeserializer()
         return {k: deserializer.deserialize(v) for k, v in item.items()}

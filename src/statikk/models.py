@@ -120,6 +120,10 @@ class DatabaseModel(BaseModel):
     def batch_get(cls, ids: List[str], batch_size: int = 100):
         return cls._table.batch_get_items(ids=ids, model_class=cls, batch_size=batch_size)
 
+    @classmethod
+    def scan(cls, filter_condition: Optional[ComparisonCondition] = None):
+        return cls._table.scan(model_class=cls, filter_condition=filter_condition)
+
     @staticmethod
     def _index_types() -> Set[Type[Index]]:
         return {Index, IndexPrimaryKeyField, IndexSecondaryKeyField}
