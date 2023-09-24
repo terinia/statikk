@@ -88,6 +88,7 @@ def test_create_my_awesome_model():
         "name": "Foo",
         "values": {1, 2, 3, 4},
         "cost": 4,
+        "type": "MyAwesomeModel",
     }
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="EPIC", name="FooFoo")
     table.put_item(model_2)
@@ -100,6 +101,7 @@ def test_create_my_awesome_model():
         "name": "FooFoo",
         "values": {1, 2, 3, 4},
         "cost": 4,
+        "type": "MyAwesomeModel",
     }
     mock_dynamodb().stop()
 
@@ -142,6 +144,7 @@ def test_multi_index_table():
         "gsi_sk": "DoubleIndexModel|LEGENDARY",
         "gsi_pk_2": "abc",
         "gsi_sk_2": datetime(2023, 9, 10, 10, 0, tzinfo=timezone.utc),
+        "type": "DoubleIndexModel",
     }
     mock_dynamodb().stop()
 
@@ -214,6 +217,7 @@ def test_multi_field_index():
         "player_id": "123",
         "tier": "LEGENDARY",
         "values": [1, 2, 3, 4],
+        "type": "MultiIndexModel",
     }
     mock_dynamodb().stop()
 
@@ -281,7 +285,7 @@ def test_query_model_index():
     )
     assert len(models) == 1
     assert models[0].id == model.id
-    assert models[0].type == model.type
+    assert models[0].model_type == model.model_type
     assert models[0].tier == model.tier
     mock_dynamodb().stop()
 
@@ -316,7 +320,7 @@ def test_query_index_name_is_provided():
     )
     assert len(models) == 1
     assert models[0].id == model.id
-    assert models[0].type == model.type
+    assert models[0].model_type == model.model_type
     assert models[0].tier == model.tier
     mock_dynamodb().stop()
 
@@ -343,10 +347,10 @@ def test_batch_get_items():
     models = table.batch_get_items(["foo", "foo-2"], MyAwesomeModel, batch_size=1)
     assert len(models) == 2
     assert models[0].id == model.id
-    assert models[0].type == model.type
+    assert models[0].model_type == model.model_type
     assert models[0].tier == model.tier
     assert models[1].id == model_2.id
-    assert models[1].type == model_2.type
+    assert models[1].model_type == model_2.model_type
     assert models[1].tier == model_2.tier
     mock_dynamodb().stop()
 
@@ -508,7 +512,7 @@ def test_type_is_primary_key():
             return False
 
         @classmethod
-        def type(cls):
+        def model_type(cls):
             return "my-type"
 
     mock_dynamodb().start()
