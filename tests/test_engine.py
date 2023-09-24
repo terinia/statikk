@@ -30,6 +30,11 @@ class MyAwesomeModel(DatabaseModel):
     cost: int = 4
 
 
+class SimpleModel(DatabaseModel):
+    player_id: IndexPrimaryKeyField
+    board_id: IndexSecondaryKeyField
+
+
 class DoubleIndexModel(DatabaseModel):
     player_id: IndexPrimaryKeyField
     tier: IndexSecondaryKeyField
@@ -636,4 +641,32 @@ def test_scan():
     model_2.save()
     items = list(MyAwesomeModel.scan())
     assert len(items) == 2
+    mock_dynamodb().stop()
+
+
+def test_query_no_range_key_provided():
+    mock_dynamodb().start()
+    table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
+        models=[MyAwesomeModel, SimpleModel],
+    )
+    _create_dynamodb_table(table)
+    model = MyAwesomeModel(id="foo", player_id="123", tier="LEGENDARY", name="FooFoo", values={1, 2, 3, 4})
+    model.save()
+    model_2 = SimpleModel(
+        player_id="123",
+        board_id="456",
+    )
+    model_2.save()
+
+    my_awesome_models = list(MyAwesomeModel.query(hash_key=Equals("123")))
+    assert len(my_awesome_models) == 1
     mock_dynamodb().stop()

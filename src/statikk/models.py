@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, List, Any, Set, Type, Tuple
+from typing import Optional, List, Any, Set, Type
 
 from boto3.dynamodb.conditions import ComparisonCondition
 from pydantic import BaseModel, model_serializer, model_validator
@@ -9,7 +9,6 @@ from pydantic.fields import FieldInfo
 from pydantic_core._pydantic_core import PydanticUndefined
 
 from statikk.conditions import Condition
-
 from statikk.expressions import DatabaseModelUpdateExpressionBuilder
 
 

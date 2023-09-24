@@ -71,6 +71,8 @@ Basic Usage
       my_model.gsi_sk # returns "MyAwesomeModel|gold"
       my_model.delete() # Delete a model
 
+See `the usage docs for more <https://github.com/terinia/statikk/blob/main/docs/usage.rst>`_
+
 =================
 Features
 =================
