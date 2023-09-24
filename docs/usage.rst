@@ -63,6 +63,12 @@ Model definition
         # models that share the same primary key. Here however, we want the type to be the primary key only.
         return False
 
+    @classmethod
+    def model_type(cls):
+      # The default return value for this method is the name of the class, but feel free to override it here to whatever
+      # you'd like present in the sort key.
+      return "Player"
+
 
   class Card(DatabaseModel):
     id: str

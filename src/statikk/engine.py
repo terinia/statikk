@@ -51,6 +51,8 @@ class Table:
             for model in self.models:
                 self._set_index_fields(model, idx)
                 model.set_table_ref(self)
+                if "type" not in model.model_fields:
+                    model.model_fields["type"] = FieldInfo(annotation=str, default=model.model_type(), required=False)
 
     def _dynamodb_client(self):
         return boto3.client(
@@ -269,7 +271,7 @@ class Table:
         index = index_filter[0]
         key_condition = hash_key.evaluate(index.hash_key.name)
         if range_key is None:
-            range_key = BeginsWith(model_class.type())
+            range_key = BeginsWith(model_class.model_type())
 
         range_key.enrich(model_class=model_class)
         key_condition = key_condition & range_key.evaluate(index.sort_key.name)
@@ -353,21 +355,21 @@ class Table:
                     continue
                 if value is not None:
                     setattr(item, key, value)
-            item.model_rebuild(force=True)
+        item.model_rebuild(force=True)
         return item.model_dump()
 
     def _serialize_item(self, item: DatabaseModel):
         data = self._prepare_model_data(item)
         for key, value in data.items():
             data[key] = self._serialize_value(value)
-        data["type"] = item.type()
+        data["type"] = item.model_type()
         return data
 
     def _deserialize_item(self, item: DatabaseModel):
         data = self._prepare_model_data(item)
         for key, value in data.items():
             data[key] = self._deserialize_value(value, item.model_fields[key].annotation)
-        data["type"] = item.type()
+        data["type"] = item.model_type()
         return data
 
     def _deserialize_value(self, value: Any, annotation: Any):
@@ -400,7 +402,7 @@ class Table:
             if field_info.annotation is IndexPrimaryKeyField and idx.name in getattr(model, field_name).index_names
         ]
         if len(hash_key_field) == 0 and model.type_is_primary_key():
-            hash_key_field.append(model.type())
+            hash_key_field.append(model.model_type())
         hash_key_field = hash_key_field[0]
         sort_key_fields = [
             field_name
@@ -411,7 +413,7 @@ class Table:
 
         def _get_sort_key_value():
             if len(sort_key_fields) == 0 and model.include_type_in_sort_key():
-                return model.type()
+                return model.model_type()
             if idx.sort_key.type is not str:
                 value = getattr(model, sort_key_fields[0]).value
                 if type(value) is not idx.sort_key.type:
@@ -425,8 +427,8 @@ class Table:
                 return self._serialize_value(value)
 
             sort_key_values: List[str] = []
-            if model.include_type_in_sort_key() and model.type() not in sort_key_values:
-                sort_key_values.append(model.type())
+            if model.include_type_in_sort_key() and model.model_type() not in sort_key_values:
+                sort_key_values.append(model.model_type())
 
             for field in sort_key_fields:
                 value = getattr(model, field).value
@@ -434,8 +436,8 @@ class Table:
             return self.delimiter.join(sort_key_values)
 
         def _get_hash_key_value():
-            if hash_key_field == model.type():
-                return model.type()
+            if hash_key_field == model.model_type():
+                return model.model_type()
             else:
                 return getattr(model, hash_key_field).value
 

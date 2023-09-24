@@ -54,7 +54,7 @@ class DatabaseModel(BaseModel):
     id: str
 
     @classmethod
-    def type(cls):
+    def model_type(cls):
         return cls.__name__
 
     @classmethod
