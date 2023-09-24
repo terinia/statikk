@@ -143,7 +143,7 @@ def test_multi_index_table():
         "gsi_pk": "123",
         "gsi_sk": "DoubleIndexModel|LEGENDARY",
         "gsi_pk_2": "abc",
-        "gsi_sk_2": datetime(2023, 9, 10, 10, 0, tzinfo=timezone.utc),
+        "gsi_sk_2": datetime(2023, 9, 10, 12, 0),
         "type": "DoubleIndexModel",
     }
     mock_dynamodb().stop()
