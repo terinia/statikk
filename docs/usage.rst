@@ -88,7 +88,7 @@ Let's take a look at the following example:
 
 .. code-block:: python
 
-  player = Player(last_login_date=datetime(2023, 9, 24))
+  player = Player(last_login_date="2023-09-24")
   player.save()
 
   card = Card(player_id=player.id, tier="EPIC", values=[1, 2, 3, 4], cost=5)
@@ -100,7 +100,7 @@ Statikk will save the following two documents into your table:
 
   { # Player object
     "id": "<random uuid>",
-    "last_login_date": 1695420000 (datetimes are automatically serialized to timestamps),
+    "last_login_date": "2023-09-24",
     "type": "Player",
     "gsi_pk": "Player",
     "gsi_sk": 1695420000
@@ -267,3 +267,61 @@ Again, Statikk will handle all the buffering for you as DynamoDb has some limita
 can be returned in a single batch, but also on the size of that data.
 
 ``batch_get_items`` also returns a generator, so you can iterate over the results as they come in.
+
+====================
+Updating items
+====================
+
+Statikk exposes an expression builder interface to make updates easier to work with. The expression builder supports all
+update operations that DynamoDb supports and provides validation for each operation based on DynamoDB's restrictions.
+The simplest way to use the builder is to go directly to the DatabaseModel's update method.
+
+Let's take a look at an example:
+
+.. code-block:: python
+
+  class Card(DatabaseModel):
+    player_id: IndexPrimaryKeyField
+    tier: IndexSecondaryKeyField
+    values: set[int]
+    cost: int
+    name: str = "Foo"
+
+  card = Card(player_id=player.id, tier="EPIC", values={1, 2, 3, 4}, cost=5, name="FooFoo")
+  card.save()
+  Card.update().set("tier", "LEGENDARY").delete("values", {1}).add("cost", 4).remove("name").execute()
+  card = Card.get(card.id)
+  card.model_dump()
+  # {
+  #   "id": "<random_uuid">,
+  #   "player_id": "<player_id>",
+  #   "tier": "LEGENDARY",
+  #   "values": {2, 3, 4},
+  #   "cost": 9,
+  #   "name": "Foo" (default value defined on the model)
+  # }
+
+Note that you need to call ``execute`` on the update expression to transmit the changes to the database.
+
+====================
+Deleting items
+====================
+
+You can either delete items in batches using the BatchWriter mechanism, or you can delete items one-by-one using the ``delete()``
+method on the model.
+
+Deleting a single item:
+
+.. code-block:: python
+
+  card = Card.get(card_id)
+  card.delete()
+
+Deleting multiple items:
+
+.. code-block:: python
+
+  with Card.batch_write() as batch:
+    for card in Card.query(...):
+      batch.delete(card)
+
