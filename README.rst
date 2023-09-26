@@ -57,7 +57,7 @@ Basic Usage
       my_model.save()
       MyAwesomeModel.update("foo").set(name="Bar").delete("values", {1}).add("cost", 1).execute() # Update multiple fields at once
       my_model = table.get("foo", MyAwesomeModel) # Get a model by its primary key using the table
-      my_model = MyAwesomeModel.get("foo") # Get a model by its primary key using the model
+      my_model = MyAwesomeModel.get("foo") # Get a model by its primary key using the model's class
       my_model.gsi_pk # returns "123"
       my_model.gsi_sk # returns "MyAwesomeModel|gold"
       my_model.delete() # Delete a model
