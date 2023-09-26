@@ -122,7 +122,7 @@ Querying
 ====================
 
 That's great, but how can we query the table? Statikk provides two interfaces for you - one lower level and one higher level for
-convienience (in case you want to migrate away from PynamoDb).
+convenience (in case you want to migrate away from PynamoDb).
 
 Let's take a look at some examples:
 
@@ -150,9 +150,9 @@ said for filter conditions. The reason for this is that filter conditions are ve
 while Key conditions are very simple and have a very limited set of use cases.
 
 You might also notice that we only specified the card's tier ("EPIC") in our range_key query, but the raw data (gsi_sk) in DynamoDb actually starts
-with the classes type ("Card|EPIC"). This is because Statikk automatically prepends the model's type to the index value. This is useful to avoid collisions
-in models that share very similar structures. This only happens if you provide a ``BeginsWith`` range key condition to your query. Or if you don't provide
-one at all.
+with the class' type ("Card|EPIC"). This is because Statikk automatically prepends the model's type to the index value. This is useful to avoid collisions
+in models that share very similar structures. This only happens if you provide a ``BeginsWith`` range key condition to your query, or if you don't provide
+a range key condition at all AND the type of the range key index field is `string`.
 
 ====================
 More advanced queries
@@ -160,7 +160,7 @@ More advanced queries
 
 Most times, Single Table Applications rely on their index fields to be constructed of multiple different values. Statikk does this for you
 based on all the IndexSecondaryKeyField fields you define on your models. If you have more than 1 IndexSecondaryKeyField, Statikk will produce
-the constructed index value based on the order of the fields you define. This is very useful, if you want to set up hierarchical queries on your data.
+the constructed index value based on the **order of the fields** you define. This is very useful, if you want to set up hierarchical queries on your data.
 
 Let's take a look at an example:
 
@@ -203,18 +203,16 @@ is actually part of both the main and the secondary index. So when Statikk const
  - Get all models by their player_id
  - Get all models by their player_id and tier
  - Get all models by their player_id and origin
- - Get all models by their player_id, tier and origin
  - Get all models by their player_id and unit_class
- - Get all models by their player_id, tier and unit_class
+ - Get all models by their player_id, tier and unit class
  - Get all models by their player_id, origin and unit_class
- - Get all models by their player_id, tier, origin and unit_class
 
 ====================
 Index typing
 ====================
 
 So far we have only looked at string-based indexes. Statikk enforces that the type of the Index fields on your models match
-the index definition you defined on the table. This is also a DynamoDB restriction; while DyanmoDB is schemalass, you can't mix
+the index definition you defined on the table. This is also a DynamoDB restriction; while DyanmoDB is schemaless, you can't mix
 and match different types for attribute properties (keys, indexes, etc).
 
 Using numeric types, for example, means you'll lose out on the hierarchical search capabilities, but will let you query your data
