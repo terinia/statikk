@@ -159,7 +159,7 @@ More advanced queries
 ====================
 
 Most times, Single Table Applications rely on their index fields to be constructed of multiple different values. Statikk does this for you
-based on all the IndexSecondaryKeyField fields you define on your models. If you have more than 1 IndexSecondaryKeyField, Statikk will produce
+based on all the IndexSecondaryKeyField fields you define on your models. If you have more than 1 IndexSecondaryKeyField, by default Statikk will produce
 the constructed index value based on the **order of the fields** you define. This is very useful, if you want to set up hierarchical queries on your data.
 
 Let's take a look at an example:
@@ -178,9 +178,17 @@ This setup allows you to search using the following patterns:
  - Get all cards belonging to a player by their origin and tier
 
 Note that the order is **REALLY** important here. Swapping up the order in on your production data will cause absolute havoc on your queries
-and will taint your data. So be careful! Statikk will not prevent you from doing this, because it's not possible to do so.
+and will taint your data.
 
-There is some work planned to make this a bit more robust, but for now, you'll have to pay attention.
+It is **HIGHLY RECOMMENDED** to manually define the order property on your secondary index fields.
+
+.. code-block:: python
+
+    class MultiKeyCard(DatabaseModel):
+      id: str
+      player_id: IndexPrimaryKeyField
+      origin: IndexSecondaryKeyField(order=1)
+      tier: IndexSecondaryKeyField(order=2)
 
 ====================
 Multiple indexes

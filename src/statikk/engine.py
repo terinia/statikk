@@ -395,12 +395,17 @@ class Table:
         if len(hash_key_field) == 0 and model.type_is_primary_key():
             hash_key_field.append(model.model_type())
         hash_key_field = hash_key_field[0]
-        sort_key_fields = [
-            field_name
+        sort_key_fields_unordered = [
+            (field_name, getattr(model, field_name).order)
             for field_name, field_info in model_fields.items()
             if field_info.annotation is not None
             if field_info.annotation is IndexSecondaryKeyField and idx.name in getattr(model, field_name).index_names
         ]
+
+        if sort_key_fields_unordered[0][1] is not None:
+            sort_key_fields_unordered.sort(key=lambda x: x[1])
+
+        sort_key_fields = [field[0] for field in sort_key_fields_unordered]
 
         def _get_sort_key_value():
             if len(sort_key_fields) == 0 and model.include_type_in_sort_key():

@@ -38,16 +38,13 @@ class Index(BaseModel):
     def ser_model(self) -> Any:
         return self.value
 
-    def __getattr__(self, attr: str) -> Any:
-        return super().__getattribute__(attr)
-
 
 class IndexPrimaryKeyField(Index):
     pass
 
 
 class IndexSecondaryKeyField(Index):
-    pass
+    order: Optional[int] = None
 
 
 class DatabaseModel(BaseModel):
@@ -138,6 +135,8 @@ class DatabaseModel(BaseModel):
         extra_fields = dict()
         if field.default is not PydanticUndefined:
             extra_fields["index_names"] = field.default.index_names
+            if field.annotation is IndexSecondaryKeyField:
+                extra_fields["order"] = field.default.order
         return annotation(value=value, **extra_fields)
 
     @model_validator(mode="before")
@@ -163,3 +162,23 @@ class DatabaseModel(BaseModel):
                     else:
                         data[key] = cls._create_index_field_from_shorthand(field, value)
         return data
+
+    @model_validator(mode="after")
+    def validate_index_fields(self):
+        sort_key_field_orders = [
+            getattr(self, field_name).order
+            for field_name, field_info in self.model_fields.items()
+            if field_info.annotation is not None
+            if field_info.annotation is IndexSecondaryKeyField
+        ]
+        have_orders_defined = any([order for order in sort_key_field_orders])
+        all_orders_defined = all([order for order in sort_key_field_orders])
+        use_default_ordering = all([order is None for order in sort_key_field_orders])
+        if have_orders_defined and not all_orders_defined and not use_default_ordering:
+            raise ValueError(
+                f"`order` is not defined on at least one of the Index keys on model {type(self)}. Please set the order for all sort key fields."
+            )
+        if all_orders_defined and len(set(sort_key_field_orders)) != len(sort_key_field_orders):
+            raise ValueError(
+                f"Duplicate `order` values found on model {type(self)}. Please ensure that all `order` values are unique."
+            )
