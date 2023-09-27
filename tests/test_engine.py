@@ -674,3 +674,32 @@ def test_query_no_range_key_provided():
     my_awesome_models = list(MyAwesomeModel.query(hash_key=Equals("123")))
     assert len(my_awesome_models) == 1
     mock_dynamodb().stop()
+
+
+def test_index_field_order_is_respected():
+    class ModelWithIndexOrdersDefined(DatabaseModel):
+        player_id: IndexPrimaryKeyField
+        unit_class: IndexSecondaryKeyField = IndexSecondaryKeyField(order=2)
+        tier: IndexSecondaryKeyField = IndexSecondaryKeyField(order=1)
+        name: str = "Foo"
+        values: set = {1, 2, 3, 4}
+        cost: int = 4
+
+    mock_dynamodb().start()
+    table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
+        models=[ModelWithIndexOrdersDefined],
+    )
+    _create_dynamodb_table(table)
+    model = ModelWithIndexOrdersDefined(id="123", player_id="456", unit_class="Mage", tier="EPIC")
+    model.save()
+    item = table.get_item("123", ModelWithIndexOrdersDefined)
+    assert item.gsi_sk == "ModelWithIndexOrdersDefined|EPIC|Mage"
