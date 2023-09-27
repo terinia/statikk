@@ -676,6 +676,41 @@ def test_query_no_range_key_provided():
     mock_dynamodb().stop()
 
 
+def test_query_no_range_is_provided_but_model_does_not_include_type_in_range_key():
+    class Model(DatabaseModel):
+        tier: IndexSecondaryKeyField
+
+        @classmethod
+        def type_is_primary_key(cls):
+            return True
+
+        @classmethod
+        def include_type_in_sort_key(cls):
+            return False
+
+    mock_dynamodb().start()
+    table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
+        models=[Model],
+    )
+    _create_dynamodb_table(table)
+    m = Model(tier="LEGENDARY")
+    m.save()
+    models = list(Model.query(hash_key=Equals("Model")))
+    assert len(models) == 1
+    assert models[0].tier.value == "LEGENDARY"
+    assert models[0].gsi_pk == "Model"
+    assert models[0].gsi_sk == "LEGENDARY"
+
+
 def test_index_field_order_is_respected():
     class ModelWithIndexOrdersDefined(DatabaseModel):
         player_id: IndexPrimaryKeyField

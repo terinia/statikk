@@ -70,9 +70,6 @@ class DatabaseModel(BaseModel):
     def batch_write(cls):
         return cls._table.batch_write()
 
-    class Config:
-        include_type_field_in_sort_key = False
-
     @classmethod
     def query(
         cls,

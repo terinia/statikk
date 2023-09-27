@@ -272,11 +272,11 @@ class Table:
             raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
         index = index_filter[0]
         key_condition = hash_key.evaluate(index.hash_key.name)
-        if range_key is None:
+        if range_key is None and model_class.include_type_in_sort_key():
             range_key = BeginsWith(model_class.model_type())
-
-        range_key.enrich(model_class=model_class)
-        key_condition = key_condition & range_key.evaluate(index.sort_key.name)
+        if range_key:
+            range_key.enrich(model_class=model_class)
+            key_condition = key_condition & range_key.evaluate(index.sort_key.name)
 
         query_params = {
             "IndexName": index_name,
@@ -368,7 +368,7 @@ class Table:
         return data
 
     def _deserialize_value(self, value: Any, annotation: Any):
-        if annotation is datetime or "annotation=datetime" in str(annotation):
+        if annotation is datetime or "datetime" in str(annotation):
             return datetime.fromtimestamp(int(value))
         return value
 
