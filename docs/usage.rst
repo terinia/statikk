@@ -295,7 +295,7 @@ Let's take a look at an example:
 
   card = Card(player_id=player.id, tier="EPIC", values={1, 2, 3, 4}, cost=5, name="FooFoo")
   card.save()
-  Card.update().set("tier", "LEGENDARY").delete("values", {1}).add("cost", 4).remove("name").execute()
+  card.update().set("tier", "LEGENDARY").delete("values", {1}).add("cost", 4).remove("name").execute()
   card = Card.get(card.id)
   card.model_dump()
   # {
@@ -305,6 +305,8 @@ Let's take a look at an example:
   #   "values": {2, 3, 4},
   #   "cost": 9,
   #   "name": "Foo" (default value defined on the model)
+  #   "gsi_pk": "<player_id>",
+  #   "gsi_sk": "Card|LEGENDARY"
   # }
 
 Note that you need to call ``execute`` on the update expression to transmit the changes to the database.

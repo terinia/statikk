@@ -92,18 +92,23 @@ class DatabaseModel(BaseModel):
     def delete(self):
         return self._table.delete_item(self.id)
 
-    @classmethod
-    def update(cls, id: str, sort_key: Optional[str] = None) -> DatabaseModelUpdateExpressionBuilder:
-        return DatabaseModelUpdateExpressionBuilder(cls, id, sort_key)
+    def update(self, sort_key: Optional[str] = None) -> DatabaseModelUpdateExpressionBuilder:
+        return DatabaseModelUpdateExpressionBuilder(self, sort_key)
 
     @classmethod
     def update_item(
         cls,
         hash_key: str,
         update_builder: DatabaseModelUpdateExpressionBuilder,
+        model: DatabaseModel,
         range_key: Optional[str] = None,
     ):
-        return cls._table.update_item(hash_key, range_key=range_key, update_builder=update_builder)
+        return cls._table.update_item(
+            hash_key,
+            range_key=range_key,
+            update_builder=update_builder,
+            model=model,
+        )
 
     @classmethod
     def get(cls, id: str, sort_key: Optional[str] = None):
