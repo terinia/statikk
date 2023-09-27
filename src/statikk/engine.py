@@ -13,6 +13,7 @@ from statikk.expressions import UpdateExpressionBuilder
 from statikk.models import (
     DatabaseModel,
     GSI,
+    Index,
     IndexPrimaryKeyField,
     IndexSecondaryKeyField,
     KeySchema,
@@ -215,6 +216,7 @@ class Table:
         self,
         hash_key: str,
         update_builder: UpdateExpressionBuilder,
+        model: DatabaseModel,
         range_key: Optional[str] = None,
     ):
         (
@@ -226,16 +228,39 @@ class Table:
         if range_key:
             key[self.key_schema.sort_key] = range_key
 
+        def _find_changed_indexes():
+            changed_index_values = set()
+            for prefixed_attribute, value in expression_attribute_values.items():
+                attribute = prefixed_attribute.replace(":", "")
+                if model.model_fields[attribute].annotation is IndexSecondaryKeyField:
+                    idx_field = getattr(model, attribute)
+                    for idx in idx_field.index_names:
+                        idx_field.value = value
+                        changed_index_values.add(idx)
+            return changed_index_values
+
+        changed_index_values = _find_changed_indexes()
+
+        for idx_name in changed_index_values:
+            idx = [idx for idx in self.indexes if idx.name == idx_name][0]
+            index_value = self._get_sort_key_value(model, idx)
+            expression_attribute_values[f":{idx.sort_key.name}"] = index_value
+            update_expression += f" SET {idx.sort_key.name} = :{idx.sort_key.name}"
+
         request = {
             "Key": key,
             "UpdateExpression": update_expression,
             "ExpressionAttributeValues": expression_attribute_values,
+            "ReturnValues": "ALL_NEW",
         }
         if expression_attribute_names:
             request["ExpressionAttributeNames"] = expression_attribute_names
 
         response = self._get_dynamodb_table().update_item(**request)
-        return response
+        data = response["Attributes"]
+        for key, value in data.items():
+            data[key] = self._deserialize_value(value, model.model_fields[key])
+        return type(model)(**data)
 
     def batch_write(self):
         """
@@ -272,11 +297,11 @@ class Table:
             raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
         index = index_filter[0]
         key_condition = hash_key.evaluate(index.hash_key.name)
-        if range_key is None:
+        if range_key is None and model_class.include_type_in_sort_key():
             range_key = BeginsWith(model_class.model_type())
-
-        range_key.enrich(model_class=model_class)
-        key_condition = key_condition & range_key.evaluate(index.sort_key.name)
+        if range_key:
+            range_key.enrich(model_class=model_class)
+            key_condition = key_condition & range_key.evaluate(index.sort_key.name)
 
         query_params = {
             "IndexName": index_name,
@@ -349,11 +374,16 @@ class Table:
 
         return results
 
-    def _prepare_model_data(self, item: DatabaseModel) -> Dict[str, Any]:
-        for idx in self.indexes:
+    def _prepare_model_data(
+        self,
+        item: DatabaseModel,
+        indexes: List[Index],
+        force_override_index_fields: bool = False,
+    ) -> Dict[str, Any]:
+        for idx in indexes:
             index_fields = self._compose_index_values(item, idx)
             for key, value in index_fields.items():
-                if hasattr(item, key) and getattr(item, key) is not None:
+                if hasattr(item, key) and (getattr(item, key) is not None and not force_override_index_fields):
                     continue
                 if value is not None:
                     setattr(item, key, value)
@@ -361,14 +391,14 @@ class Table:
         return item.model_dump()
 
     def _serialize_item(self, item: DatabaseModel):
-        data = self._prepare_model_data(item)
+        data = self._prepare_model_data(item, self.indexes)
         for key, value in data.items():
             data[key] = self._serialize_value(value)
         data["type"] = item.model_type()
         return data
 
     def _deserialize_value(self, value: Any, annotation: Any):
-        if annotation is datetime or "annotation=datetime" in str(annotation):
+        if annotation is datetime or "datetime" in str(annotation):
             return datetime.fromtimestamp(int(value))
         return value
 
@@ -384,6 +414,42 @@ class Table:
         if idx.sort_key.name not in model_fields:
             model_fields[idx.sort_key.name] = FieldInfo(annotation=idx.sort_key.type, default=None, required=False)
 
+    def _get_sort_key_value(self, model: DatabaseModel, idx: GSI) -> str:
+        sort_key_fields_unordered = [
+            (field_name, getattr(model, field_name).order)
+            for field_name, field_info in model.model_fields.items()
+            if field_info.annotation is not None
+            if field_info.annotation is IndexSecondaryKeyField and idx.name in getattr(model, field_name).index_names
+        ]
+
+        if sort_key_fields_unordered[0][1] is not None:
+            sort_key_fields_unordered.sort(key=lambda x: x[1])
+
+        sort_key_fields = [field[0] for field in sort_key_fields_unordered]
+
+        if len(sort_key_fields) == 0 and model.include_type_in_sort_key():
+            return model.model_type()
+        if idx.sort_key.type is not str:
+            value = getattr(model, sort_key_fields[0]).value
+            if type(value) is not idx.sort_key.type:
+                raise IncorrectSortKeyError(
+                    f"Incorrect sort key type. Sort key type for sort key '{idx.sort_key.name}' should be: "
+                    + str(idx.sort_key.type)
+                    + " but got: "
+                    + str(type(value))
+                )
+            value = value or idx.sort_key.default
+            return self._serialize_value(value)
+
+        sort_key_values: List[str] = []
+        if model.include_type_in_sort_key() and model.model_type() not in sort_key_values:
+            sort_key_values.append(model.model_type())
+
+        for field in sort_key_fields:
+            value = getattr(model, field).value
+            sort_key_values.append(value)
+        return self.delimiter.join(sort_key_values)
+
     def _compose_index_values(self, model: DatabaseModel, idx: GSI) -> Dict[str, Any]:
         model_fields = model.model_fields
         hash_key_field = [
@@ -395,41 +461,6 @@ class Table:
         if len(hash_key_field) == 0 and model.type_is_primary_key():
             hash_key_field.append(model.model_type())
         hash_key_field = hash_key_field[0]
-        sort_key_fields_unordered = [
-            (field_name, getattr(model, field_name).order)
-            for field_name, field_info in model_fields.items()
-            if field_info.annotation is not None
-            if field_info.annotation is IndexSecondaryKeyField and idx.name in getattr(model, field_name).index_names
-        ]
-
-        if sort_key_fields_unordered[0][1] is not None:
-            sort_key_fields_unordered.sort(key=lambda x: x[1])
-
-        sort_key_fields = [field[0] for field in sort_key_fields_unordered]
-
-        def _get_sort_key_value():
-            if len(sort_key_fields) == 0 and model.include_type_in_sort_key():
-                return model.model_type()
-            if idx.sort_key.type is not str:
-                value = getattr(model, sort_key_fields[0]).value
-                if type(value) is not idx.sort_key.type:
-                    raise IncorrectSortKeyError(
-                        f"Incorrect sort key type. Sort key type for sort key '{idx.sort_key.name}' should be: "
-                        + str(idx.sort_key.type)
-                        + " but got: "
-                        + str(type(value))
-                    )
-                value = value or idx.sort_key.default
-                return self._serialize_value(value)
-
-            sort_key_values: List[str] = []
-            if model.include_type_in_sort_key() and model.model_type() not in sort_key_values:
-                sort_key_values.append(model.model_type())
-
-            for field in sort_key_fields:
-                value = getattr(model, field).value
-                sort_key_values.append(value)
-            return self.delimiter.join(sort_key_values)
 
         def _get_hash_key_value():
             if hash_key_field == model.model_type():
@@ -439,7 +470,7 @@ class Table:
 
         return {
             idx.hash_key.name: _get_hash_key_value(),
-            idx.sort_key.name: _get_sort_key_value(),
+            idx.sort_key.name: self._get_sort_key_value(model, idx),
         }
 
     def _perform_batch_write(self, put_items: List[DatabaseModel], delete_items: List[DatabaseModel]):

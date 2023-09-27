@@ -591,10 +591,14 @@ class UpdateExpressionBuilder:
         self.model_schema = model_cls.model_json_schema()
         self.expression_attribute_names = {}
 
+    @classmethod
+    def safe_name(cls, key):
+        return f"#n_{key}"
+
     def _safe_name(self, key):
         """Replace reserved words with a safe placeholder."""
         if key.upper() in RESERVED_WORDS:
-            safe_key = f"#n_{key}"
+            safe_key = self.safe_name(key)
             self.expression_attribute_names[safe_key] = key
             return safe_key
         return key
@@ -669,11 +673,17 @@ class UpdateExpressionBuilder:
 
 
 class DatabaseModelUpdateExpressionBuilder(UpdateExpressionBuilder):
-    def __init__(self, model_cls: Type[DatabaseModel], id: str, sort_key: Optional[str] = None):
-        self.hash_key = id
+    def __init__(self, model, sort_key: Optional[str] = None):
+        self.model = model
+        self.hash_key = model.id
         self.sort_key = sort_key
-        self.model_cls = model_cls
-        super().__init__(model_cls)
+        self.model_cls = model.__class__
+        super().__init__(self.model_cls)
 
     def execute(self):
-        return self.model_cls.update_item(self.hash_key, range_key=self.sort_key, update_builder=self)
+        return self.model_cls.update_item(
+            self.hash_key,
+            range_key=self.sort_key,
+            update_builder=self,
+            model=self.model,
+        )

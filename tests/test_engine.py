@@ -591,11 +591,7 @@ def test_get_item_does_not_exist():
     mock_dynamodb().stop()
 
 
-def test_update_set_attribute():
-    pass
-
-
-def test_update_add_attribute():
+def test_update():
     mock_dynamodb().start()
     table = Table(
         name="my-dynamodb-table",
@@ -612,13 +608,23 @@ def test_update_add_attribute():
     _create_dynamodb_table(table)
     model = MyAwesomeModel(id="foo", player_id="123", tier="LEGENDARY", name="FooFoo", values={1, 2, 3, 4})
     model.save()
-    MyAwesomeModel.update("foo").set("player_id", "456").delete("values", {1}).remove("name").add("cost", 1).execute()
+    (
+        model.update()
+        .set("player_id", "456")
+        .set("tier", "EPIC")
+        .delete("values", {1})
+        .remove("name")
+        .add("cost", 1)
+        .execute()
+    )
     item = table.get_item("foo", MyAwesomeModel)
     assert item.player_id.value == "456"
     assert item.values == {2, 3, 4}
     assert item.name == "Foo"  # default value
     assert item.cost == 5
-    MyAwesomeModel.update("foo").set("name", "FooFoo").execute()
+    assert item.tier.value == "EPIC"
+    assert item.gsi_sk == "MyAwesomeModel|EPIC"
+    item.update().set("name", "FooFoo").execute()
     item = table.get_item("foo", MyAwesomeModel)
     assert item.name == "FooFoo"
     mock_dynamodb().stop()
@@ -674,6 +680,41 @@ def test_query_no_range_key_provided():
     my_awesome_models = list(MyAwesomeModel.query(hash_key=Equals("123")))
     assert len(my_awesome_models) == 1
     mock_dynamodb().stop()
+
+
+def test_query_no_range_is_provided_but_model_does_not_include_type_in_range_key():
+    class Model(DatabaseModel):
+        tier: IndexSecondaryKeyField
+
+        @classmethod
+        def type_is_primary_key(cls):
+            return True
+
+        @classmethod
+        def include_type_in_sort_key(cls):
+            return False
+
+    mock_dynamodb().start()
+    table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
+        models=[Model],
+    )
+    _create_dynamodb_table(table)
+    m = Model(tier="LEGENDARY")
+    m.save()
+    models = list(Model.query(hash_key=Equals("Model")))
+    assert len(models) == 1
+    assert models[0].tier.value == "LEGENDARY"
+    assert models[0].gsi_pk == "Model"
+    assert models[0].gsi_sk == "LEGENDARY"
 
 
 def test_index_field_order_is_respected():
