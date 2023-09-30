@@ -6,7 +6,7 @@ import boto3
 from botocore.config import Config
 from pydantic.fields import FieldInfo
 from boto3.dynamodb.conditions import ComparisonCondition, Key
-from boto3.dynamodb.types import TypeDeserializer
+from boto3.dynamodb.types import TypeDeserializer, Decimal
 
 from statikk.conditions import Condition, Equals, BeginsWith
 from statikk.expressions import UpdateExpressionBuilder
@@ -157,7 +157,13 @@ class Table:
         key = {self.key_schema.hash_key: id}
         self._get_dynamodb_table().delete_item(Key=key)
 
-    def get_item(self, id: str, model_class: Type[DatabaseModel], sort_key: Optional[Any] = None):
+    def get_item(
+        self,
+        id: str,
+        model_class: Type[DatabaseModel],
+        sort_key: Optional[Any] = None,
+        consistent_read: bool = False,
+    ):
         """
         Returns an item from the database by id, using the partition key of the table.
         :param id: The id of the item to retrieve.
@@ -167,11 +173,10 @@ class Table:
         key = {self.key_schema.hash_key: id}
         if sort_key:
             key[self.key_schema.sort_key] = self._serialize_value(sort_key)
-        raw_data = self._get_dynamodb_table().get_item(Key=key)
+        raw_data = self._get_dynamodb_table().get_item(Key=key, ConsistentRead=consistent_read)
         if "Item" not in raw_data:
             raise ItemNotFoundError(f"{model_class} with id '{id}' not found.")
         data = raw_data["Item"]
-        del data["type"]
         for key, value in data.items():
             data[key] = self._deserialize_value(value, model_class.model_fields[key])
         return model_class(**data)
@@ -207,7 +212,6 @@ class Table:
         """
         data = self._serialize_item(model)
         self._get_dynamodb_table().put_item(Item=data)
-        del data["type"]
         for key, value in data.items():
             data[key] = self._deserialize_value(value, model.model_fields[key])
         return type(model)(**data)
@@ -231,6 +235,7 @@ class Table:
         def _find_changed_indexes():
             changed_index_values = set()
             for prefixed_attribute, value in expression_attribute_values.items():
+                expression_attribute_values[prefixed_attribute] = self._serialize_value(value)
                 attribute = prefixed_attribute.replace(":", "")
                 if model.model_fields[attribute].annotation is IndexSecondaryKeyField:
                     idx_field = getattr(model, attribute)
@@ -313,13 +318,14 @@ class Table:
 
         while last_evaluated_key:
             items = self._get_dynamodb_table().query(**query_params)
-            yield from [model_class(**item) for item in items["Items"]]
+            yield from [self._deserialize_item(item, model_class=model_class) for item in items["Items"]]
             last_evaluated_key = items.get("LastEvaluatedKey", False)
 
     def scan(
         self,
         model_class: Type[DatabaseModel],
         filter_condition: Optional[ComparisonCondition] = None,
+        consistent_read: bool = False,
     ):
         """
         Scans the database for items matching the provided filter condition. The method returns a list of items matching
@@ -328,7 +334,9 @@ class Table:
         :param model_class: The model class to use to deserialize the items.
         :param filter_condition: An optional filter condition to use for the query. See boto3.dynamodb.conditions.ComparisonCondition for more information.
         """
-        query_params = {}
+        query_params = {
+            "ConsistentRead": consistent_read,
+        }
         if filter_condition:
             query_params["FilterExpression"] = filter_condition
         last_evaluated_key = True
@@ -394,17 +402,29 @@ class Table:
         data = self._prepare_model_data(item, self.indexes)
         for key, value in data.items():
             data[key] = self._serialize_value(value)
-        data["type"] = item.model_type()
         return data
+
+    def _deserialize_item(self, item: Dict[str, Any], model_class: Type[DatabaseModel]):
+        for key, value in item.items():
+            item[key] = self._deserialize_value(value, model_class.model_fields[key])
+        return model_class(**item)
 
     def _deserialize_value(self, value: Any, annotation: Any):
         if annotation is datetime or "datetime" in str(annotation):
             return datetime.fromtimestamp(int(value))
+        if annotation is float:
+            return float(value)
         return value
 
     def _serialize_value(self, value: Any):
         if isinstance(value, datetime):
             return int(value.timestamp())
+        if isinstance(value, float):
+            return Decimal(value)
+        if isinstance(value, list):
+            return [self._serialize_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._serialize_value(item) for key, item in value.items() if item is not None}
         return value
 
     def _set_index_fields(self, model: DatabaseModel | Type[DatabaseModel], idx: GSI):
@@ -422,6 +442,8 @@ class Table:
             if field_info.annotation is IndexSecondaryKeyField and idx.name in getattr(model, field_name).index_names
         ]
 
+        if len(sort_key_fields_unordered) == idx.sort_key is not None:
+            raise IncorrectSortKeyError(f"Model {model.__class__} does not have a sort key defined.")
         if sort_key_fields_unordered[0][1] is not None:
             sort_key_fields_unordered.sort(key=lambda x: x[1])
 
