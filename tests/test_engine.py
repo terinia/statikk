@@ -1,6 +1,7 @@
+from _decimal import Decimal
 from datetime import datetime, timezone
 from typing import List
-
+from pydantic import BaseModel
 import pytest
 from boto3.dynamodb.conditions import Attr
 from moto import mock_dynamodb
@@ -28,6 +29,7 @@ class MyAwesomeModel(DatabaseModel):
     name: str = "Foo"
     values: set = {1, 2, 3, 4}
     cost: int = 4
+    probability: float = 0.5
 
 
 class SimpleModel(DatabaseModel):
@@ -89,6 +91,7 @@ def test_create_my_awesome_model():
         "values": {1, 2, 3, 4},
         "cost": 4,
         "type": "MyAwesomeModel",
+        "probability": 0.5,
     }
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="EPIC", name="FooFoo")
     table.put_item(model_2)
@@ -102,6 +105,7 @@ def test_create_my_awesome_model():
         "values": {1, 2, 3, 4},
         "cost": 4,
         "type": "MyAwesomeModel",
+        "probability": 0.5,
     }
     mock_dynamodb().stop()
 
@@ -744,3 +748,71 @@ def test_index_field_order_is_respected():
     model.save()
     item = table.get_item("123", ModelWithIndexOrdersDefined)
     assert item.gsi_sk == "ModelWithIndexOrdersDefined|EPIC|Mage"
+
+
+def test_nested_models():
+    class InnerInnerModel(BaseModel):
+        baz: str
+
+    class InnerModel(BaseModel):
+        foo: str
+        values: List[datetime] = [
+            datetime(2023, 9, 9, 12, 0, 0),
+            datetime(2023, 9, 9, 13, 0, 0),
+        ]
+        cost: int = 5
+        inner_inner: InnerInnerModel
+
+    class NestedModel(DatabaseModel):
+        player_id: IndexPrimaryKeyField
+        unit_class: IndexSecondaryKeyField = IndexSecondaryKeyField(order=2)
+        tier: IndexSecondaryKeyField = IndexSecondaryKeyField(order=1)
+        name: str = "Foo"
+        values: set = {1, 2, 3, 4}
+        cost: int = 4
+        inner_model: InnerModel
+
+    mock_dynamodb().start()
+    table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
+        models=[NestedModel],
+    )
+    _create_dynamodb_table(table)
+    model = NestedModel(
+        id="123",
+        player_id="456",
+        unit_class="Mage",
+        tier="EPIC",
+        inner_model=InnerModel(foo="bar", inner_inner=InnerInnerModel(baz="baz")),
+    )
+    model.save()
+    item = table.get_item("123", NestedModel)
+    assert item.model_dump() == {
+        "id": "123",
+        "player_id": "456",
+        "unit_class": "Mage",
+        "tier": "EPIC",
+        "name": "Foo",
+        "values": {Decimal("1"), Decimal("2"), Decimal("3"), Decimal("4")},
+        "cost": 4,
+        "inner_model": {
+            "foo": "bar",
+            "values": [
+                datetime(2023, 9, 9, 10, 0, tzinfo=timezone.utc),
+                datetime(2023, 9, 9, 11, 0, tzinfo=timezone.utc),
+            ],
+            "cost": 5,
+            "inner_inner": {"baz": "baz"},
+        },
+        "gsi_pk": "456",
+        "gsi_sk": "NestedModel|EPIC|Mage",
+        "type": "NestedModel",
+    }

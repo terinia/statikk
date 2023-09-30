@@ -111,15 +111,19 @@ class DatabaseModel(BaseModel):
         )
 
     @classmethod
-    def get(cls, id: str, sort_key: Optional[str] = None):
-        return cls._table.get_item(id=id, model_class=cls, sort_key=sort_key)
+    def get(cls, id: str, sort_key: Optional[str] = None, consistent_read: bool = False):
+        return cls._table.get_item(id=id, model_class=cls, sort_key=sort_key, consistent_read=consistent_read)
 
     @classmethod
     def batch_get(cls, ids: List[str], batch_size: int = 100):
         return cls._table.batch_get_items(ids=ids, model_class=cls, batch_size=batch_size)
 
     @classmethod
-    def scan(cls, filter_condition: Optional[ComparisonCondition] = None):
+    def scan(
+        cls,
+        filter_condition: Optional[ComparisonCondition] = None,
+        consistent_read: bool = False,
+    ):
         return cls._table.scan(model_class=cls, filter_condition=filter_condition)
 
     @staticmethod
