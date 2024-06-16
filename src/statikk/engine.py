@@ -19,6 +19,10 @@ from statikk.models import (
     KeySchema,
 )
 
+from aws_xray_sdk.core import xray_recorder
+from aws_xray_sdk.core import patch_all
+
+patch_all()
 
 class InvalidIndexNameError(Exception):
     pass
@@ -54,19 +58,30 @@ class Table:
                 model.set_table_ref(self)
                 if "type" not in model.model_fields:
                     model.model_fields["type"] = FieldInfo(annotation=str, default=model.model_type(), required=False)
+        self._client = None
+        self._dynamodb_table = None
 
     def _dynamodb_client(self):
-        return boto3.client(
+        if self._client:
+            return self._client
+
+        self._client = boto3.client(
             "dynamodb",
             config=Config(region_name=os.environ.get("AWS_DEFAULT_REGION", "eu-west-1")),
         )
 
+        return self._client
+
     def _get_dynamodb_table(self):
+        if self._dynamodb_table:
+            return self._dynamodb_table
+
         dynamodb = boto3.resource(
             "dynamodb",
             config=Config(region_name=os.environ.get("AWS_DEFAULT_REGION", "eu-west-1")),
         )
-        return dynamodb.Table(self.name)
+        self._dynamodb_table = dynamodb.Table(self.name)
+        return self._dynamodb_table
 
     def _to_dynamodb_type(self, type: Any):
         if type is str:
