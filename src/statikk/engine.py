@@ -164,14 +164,6 @@ class Table:
         """Deletes the DynamoDB table."""
         self._dynamodb_client().delete_table(TableName=self.name)
 
-    def delete_item(self, id: str):
-        """
-        Deletes an item from the database by id, using the partition key of the table.
-        :param id: The id of the item to delete.
-        """
-        key = {self.key_schema.hash_key: id}
-        self._get_dynamodb_table().delete_item(Key=key)
-
     def get_item(
         self,
         id: str,
@@ -195,6 +187,14 @@ class Table:
         for key, value in data.items():
             data[key] = self._deserialize_value(value, model_class.model_fields[key])
         return model_class(**data)
+
+    def delete_item(self, id: str):
+        """
+        Deletes an item from the database by id, using the partition key of the table.
+        :param id: The id of the item to delete.
+        """
+        key = {self.key_schema.hash_key: id}
+        self._get_dynamodb_table().delete_item(Key=key)
 
     def put_item(self, model: DatabaseModel) -> DatabaseModel:
         """
@@ -389,7 +389,7 @@ class Table:
                 else:
                     results.extend(
                         [
-                            model_class(**self._convert_dynamodb_to_python(item))
+                            self._deserialize_item(self._convert_dynamodb_to_python(item), model_class)
                             for item in response["Responses"][self.name]
                         ]
                     )
@@ -425,7 +425,7 @@ class Table:
         return model_class(**item)
 
     def _deserialize_value(self, value: Any, annotation: Any):
-        if annotation is datetime or "datetime" in str(annotation):
+        if annotation is datetime or "datetime" in str(annotation) and value is not None:
             return datetime.fromtimestamp(int(value))
         if annotation is float:
             return float(value)
