@@ -1,6 +1,6 @@
 from _decimal import Decimal
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel
 import pytest
 from boto3.dynamodb.conditions import Attr
@@ -30,7 +30,7 @@ class MyAwesomeModel(DatabaseModel):
     values: set = {1, 2, 3, 4}
     cost: int = 4
     probability: float = 0.5
-
+    created_at: Optional[datetime] = None
 
 class SimpleModel(DatabaseModel):
     player_id: IndexPrimaryKeyField
@@ -92,6 +92,7 @@ def test_create_my_awesome_model():
         "cost": 4,
         "type": "MyAwesomeModel",
         "probability": 0.5,
+        "created_at": None
     }
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="EPIC", name="FooFoo")
     table.put_item(model_2)
@@ -106,6 +107,7 @@ def test_create_my_awesome_model():
         "cost": 4,
         "type": "MyAwesomeModel",
         "probability": 0.5,
+        "created_at": None
     }
     mock_dynamodb().stop()
 
@@ -344,7 +346,7 @@ def test_batch_get_items():
         models=[MyAwesomeModel],
     )
     _create_dynamodb_table(table)
-    model = MyAwesomeModel(id="foo", player_id="123", tier="LEGENDARY")
+    model = MyAwesomeModel(id="foo", player_id="123", tier="LEGENDARY", created_at=datetime(2024, 7, 9))
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="LEGENDARY")
     table.put_item(model)
     table.put_item(model_2)
@@ -353,9 +355,11 @@ def test_batch_get_items():
     assert models[0].id == model.id
     assert models[0].model_type == model.model_type
     assert models[0].tier == model.tier
+    assert models[0].created_at == datetime(2024, 7, 9)
     assert models[1].id == model_2.id
     assert models[1].model_type == model_2.model_type
     assert models[1].tier == model_2.tier
+    assert models[1].created_at is None
     mock_dynamodb().stop()
 
 
