@@ -2,11 +2,9 @@
     :alt: Statikk
     :align: center
 
-We built this library because we got fed up with all the boilerplate we needed to write to use DynamoDB in a Single Table Application architecture.
-We were originally using `PynamoDB <https://github.com/pynamodb/PynamoDB>`_ , but we found it to be too verbose for our liking.
+An ORM-like Single Table Application (STA) architecture library for Python and DynamoDb. Makes it really eason to set up and work with STAs.
 
-This library is very much in alpha phase and is not yet recommended for production use. We are actively working on it and using it as a core library
-for our upcoming game, Conquests of Ethoas. Drastic API changes can still happen.
+The library is in alpha. Constant work is being done on it as I'm developing my game.
 
 =================
 Requirements
