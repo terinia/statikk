@@ -14,50 +14,86 @@ from statikk.engine import (
     ItemNotFoundError,
 )
 from statikk.models import (
-    DatabaseModel,
-    IndexPrimaryKeyField,
-    IndexSecondaryKeyField,
+    DatabaseModelV2,
     KeySchema,
     GSI,
     Key,
 )
 
 
-class MyAwesomeModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField
-    tier: IndexSecondaryKeyField
+class MyAwesomeModel(DatabaseModelV2):
+    player_id: str
+    tier: str
     name: str = "Foo"
     values: set = {1, 2, 3, 4}
     cost: int = 4
     probability: float = 0.5
     created_at: Optional[datetime] = None
 
-class SimpleModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField
-    board_id: IndexSecondaryKeyField
+    @classmethod
+    def index_definitions(cls) -> dict[str, list[str]]:
+        return {"main-index": ["player_id", "tier"]}
+
+    @classmethod
+    def type(cls) -> str:
+        return "MyAwesomeModel"
 
 
-class DoubleIndexModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField
-    tier: IndexSecondaryKeyField
-    card_template_id: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["secondary-index"])
-    added_at: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["secondary-index"])
+class SimpleModel(DatabaseModelV2):
+    player_id: str
+    board_id: str
+
+    @classmethod
+    def index_definitions(cls) -> dict[str, list[str]]:
+        return {"main-index": ["player_id", "board_id"]}
+
+    @classmethod
+    def type(cls) -> str:
+        return "SimpleModel"
 
 
-class MultiIndexModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField
+class DoubleIndexModel(DatabaseModelV2):
+    player_id: str
+    tier: str
+    card_template_id: str
+    added_at: datetime
 
-    card_template_id: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["secondary-index"])
-    tier: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["secondary-index", "main-index"])
+    @classmethod
+    def index_definitions(cls) -> dict[str, list[str]]:
+        return {"main-index": ["player_id", "tier"], "secondary-index": ["card_template_id", "added_at"]}
+
+    @classmethod
+    def type(cls) -> str:
+        return "DoubleIndexModel"
+
+
+class MultiIndexModel(DatabaseModelV2):
+    player_id: str
+
+    card_template_id: str
+    tier: str
     values: List[int] = [1, 2, 3, 4]
 
-    def include_type_in_sort_key(cls):
-        return False
+    @classmethod
+    def type(cls) -> str:
+        return "MultiIndexModel"
+
+    @classmethod
+    def index_definitions(cls) -> dict[str, list[str]]:
+        return {"main-index": ["player_id", "tier"], "secondary-index": ["card_template_id", "tier"]}
 
 
-class SomeOtherIndexModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["my-awesome-index"])
-    tier: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["my-awesome-index"])
+class SomeOtherIndexModel(DatabaseModelV2):
+    player_id: str
+    tier: str
+
+    @classmethod
+    def type(cls) -> str:
+        return "SomeOtherIndexModel"
+
+    @classmethod
+    def index_definitions(cls) -> dict[str, list[str]]:
+        return {"my-awesome-index": ["player_id", "tier"]}
 
 
 def _create_dynamodb_table(table):
@@ -92,7 +128,7 @@ def test_create_my_awesome_model():
         "cost": 4,
         "type": "MyAwesomeModel",
         "probability": 0.5,
-        "created_at": None
+        "created_at": None,
     }
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="EPIC", name="FooFoo")
     table.put_item(model_2)
@@ -107,7 +143,7 @@ def test_create_my_awesome_model():
         "cost": 4,
         "type": "MyAwesomeModel",
         "probability": 0.5,
-        "created_at": None
+        "created_at": None,
     }
     mock_dynamodb().stop()
 
@@ -145,7 +181,7 @@ def test_multi_index_table():
         "player_id": "123",
         "tier": "LEGENDARY",
         "card_template_id": "abc",
-        "added_at": 1694340000,
+        "added_at": datetime(2023, 9, 10, 12, 0),
         "gsi_pk": "123",
         "gsi_sk": "DoubleIndexModel|LEGENDARY",
         "gsi_pk_2": "abc",
@@ -153,42 +189,6 @@ def test_multi_index_table():
         "type": "DoubleIndexModel",
     }
     mock_dynamodb().stop()
-
-
-def test_incorrect_index_type():
-    mock_dynamodb().start()
-    table = Table(
-        name="my-table",
-        key_schema=KeySchema(hash_key="id"),
-        indexes=[
-            GSI(
-                name="main-index",
-                hash_key=Key(name="gsi_pk"),
-                sort_key=Key(name="gsi_sk"),
-            ),
-            GSI(
-                name="secondary-index",
-                hash_key=Key(name="gsi_pk_2"),
-                sort_key=Key(name="gsi_sk_2", type=datetime),
-            ),
-        ],
-        models=[DoubleIndexModel],
-    )
-    _create_dynamodb_table(table)
-    my_model = DoubleIndexModel(
-        id="foo",
-        player_id="123",
-        tier="LEGENDARY",
-        card_template_id="abc",
-        added_at="2023-01-01 12:00:00",
-    )
-
-    with pytest.raises(IncorrectSortKeyError) as e:
-        table.put_item(my_model)
-    assert (
-        e.value.args[0]
-        == f"Incorrect sort key type. Sort key type for sort key 'gsi_sk_2' should be: <class 'datetime.datetime'> but got: <class 'str'>"
-    )
 
 
 def test_multi_field_index():
@@ -217,8 +217,8 @@ def test_multi_field_index():
         "card_template_id": "abc",
         "gsi_pk": "123",
         "gsi_pk_2": "abc",
-        "gsi_sk": "LEGENDARY",
-        "gsi_sk_2": "LEGENDARY",
+        "gsi_sk": "MultiIndexModel|LEGENDARY",
+        "gsi_sk_2": "MultiIndexModel|LEGENDARY",
         "id": "card-id",
         "player_id": "123",
         "tier": "LEGENDARY",
@@ -257,8 +257,8 @@ def test_integration_get_item():
     assert item.tier == model.tier
     assert item.gsi_pk == "123"
     assert item.gsi_pk_2 == "abc"
-    assert item.gsi_sk == "LEGENDARY"
-    assert item.gsi_sk_2 == "LEGENDARY"
+    assert item.gsi_sk == "MultiIndexModel|LEGENDARY"
+    assert item.gsi_sk_2 == "MultiIndexModel|LEGENDARY"
     mock_dynamodb().stop()
 
 
@@ -291,7 +291,7 @@ def test_query_model_index():
     )
     assert len(models) == 1
     assert models[0].id == model.id
-    assert models[0].model_type == model.model_type
+    assert models[0].type() == model.type()
     assert models[0].tier == model.tier
     mock_dynamodb().stop()
 
@@ -326,7 +326,7 @@ def test_query_index_name_is_provided():
     )
     assert len(models) == 1
     assert models[0].id == model.id
-    assert models[0].model_type == model.model_type
+    assert models[0].type() == model.type()
     assert models[0].tier == model.tier
     mock_dynamodb().stop()
 
@@ -353,11 +353,11 @@ def test_batch_get_items():
     models = table.batch_get_items(["foo", "foo-2"], MyAwesomeModel, batch_size=1)
     assert len(models) == 2
     assert models[0].id == model.id
-    assert models[0].model_type == model.model_type
+    assert models[0].type() == model.type()
     assert models[0].tier == model.tier
     assert models[0].created_at == datetime(2024, 7, 9)
     assert models[1].id == model_2.id
-    assert models[1].model_type == model_2.model_type
+    assert models[1].type() == model_2.type()
     assert models[1].tier == model_2.tier
     assert models[1].created_at is None
     mock_dynamodb().stop()
@@ -477,50 +477,25 @@ def test_table_delegates():
     assert saved_models[2] == model_3
 
 
-def test_exclude_type_from_sort_key():
-    class ExcludeTypeModel(DatabaseModel):
-        player_id: IndexPrimaryKeyField
-        tier: IndexSecondaryKeyField
-
-        @classmethod
-        def include_type_in_sort_key(cls):
-            return False
-
-    mock_dynamodb().start()
-    table = Table(
-        name="my-dynamodb-table",
-        key_schema=KeySchema(hash_key="id"),
-        indexes=[
-            GSI(
-                name="main-index",
-                hash_key=Key(name="gsi_pk"),
-                sort_key=Key(name="gsi_sk"),
-            )
-        ],
-        models=[ExcludeTypeModel],
-    )
-    _create_dynamodb_table(table)
-    model = ExcludeTypeModel(id="foo", player_id="123", tier="LEGENDARY").save()
-    saved_model = ExcludeTypeModel.get(model.id)
-    assert "ExcludeTypeModel" not in saved_model.gsi_sk
-    mock_dynamodb().stop()
-
-
 def test_type_is_primary_key():
-    class TypeIsPrimaryKeyModel(DatabaseModel):
-        tier: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["main-index", "secondary-index"])
-        foo: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["secondary-index"])
+    class TypeIsPrimaryKeyModel(DatabaseModelV2):
+        tier: str
+        foo: str
 
         @classmethod
-        def type_is_primary_key(cls):
-            return True
+        def index_definitions(cls) -> dict[str, list[str]]:
+            return {"main-index": ["tier"], "secondary-index": ["foo", "tier"]}
+
+        @classmethod
+        def type_is_primary_key(cls) -> list[str]:
+            return ["main-index"]
 
         @classmethod
         def include_type_in_sort_key(cls):
             return False
 
         @classmethod
-        def model_type(cls):
+        def type(cls):
             return "my-type"
 
     mock_dynamodb().start()
@@ -546,7 +521,7 @@ def test_type_is_primary_key():
     assert model.gsi_pk == "my-type"
     assert model.gsi_sk == "LEGENDARY"
     assert model.gsi_pk_2 == "Bar"
-    assert model.gsi_sk_2 == "LEGENDARY"
+    assert model.gsi_sk_2 == "my-type|LEGENDARY"
     mock_dynamodb().stop()
 
 
@@ -626,11 +601,11 @@ def test_update():
         .execute()
     )
     item = table.get_item("foo", MyAwesomeModel)
-    assert item.player_id.value == "456"
+    assert item.player_id == "456"
     assert item.values == {2, 3, 4}
     assert item.name == "Foo"  # default value
     assert item.cost == 5
-    assert item.tier.value == "EPIC"
+    assert item.tier == "EPIC"
     assert item.gsi_sk == "MyAwesomeModel|EPIC"
     item.update().set("name", "FooFoo").execute()
     item = table.get_item("foo", MyAwesomeModel)
@@ -691,16 +666,16 @@ def test_query_no_range_key_provided():
 
 
 def test_query_no_range_is_provided_but_model_does_not_include_type_in_range_key():
-    class Model(DatabaseModel):
-        tier: IndexSecondaryKeyField
+    class Model(DatabaseModelV2):
+        tier: str
 
         @classmethod
-        def type_is_primary_key(cls):
-            return True
+        def type_is_primary_key(cls) -> list[str]:
+            return ["main-index"]
 
         @classmethod
-        def include_type_in_sort_key(cls):
-            return False
+        def index_definitions(cls) -> dict[str, list[str]]:
+            return {"main-index": ["tier"]}
 
     mock_dynamodb().start()
     table = Table(
@@ -720,38 +695,9 @@ def test_query_no_range_is_provided_but_model_does_not_include_type_in_range_key
     m.save()
     models = list(Model.query(hash_key=Equals("Model")))
     assert len(models) == 1
-    assert models[0].tier.value == "LEGENDARY"
+    assert models[0].tier == "LEGENDARY"
     assert models[0].gsi_pk == "Model"
     assert models[0].gsi_sk == "LEGENDARY"
-
-
-def test_index_field_order_is_respected():
-    class ModelWithIndexOrdersDefined(DatabaseModel):
-        player_id: IndexPrimaryKeyField
-        unit_class: IndexSecondaryKeyField = IndexSecondaryKeyField(order=2)
-        tier: IndexSecondaryKeyField = IndexSecondaryKeyField(order=1)
-        name: str = "Foo"
-        values: set = {1, 2, 3, 4}
-        cost: int = 4
-
-    mock_dynamodb().start()
-    table = Table(
-        name="my-dynamodb-table",
-        key_schema=KeySchema(hash_key="id"),
-        indexes=[
-            GSI(
-                name="main-index",
-                hash_key=Key(name="gsi_pk"),
-                sort_key=Key(name="gsi_sk"),
-            )
-        ],
-        models=[ModelWithIndexOrdersDefined],
-    )
-    _create_dynamodb_table(table)
-    model = ModelWithIndexOrdersDefined(id="123", player_id="456", unit_class="Mage", tier="EPIC")
-    model.save()
-    item = table.get_item("123", ModelWithIndexOrdersDefined)
-    assert item.gsi_sk == "ModelWithIndexOrdersDefined|EPIC|Mage"
 
 
 def test_nested_models():
@@ -767,14 +713,18 @@ def test_nested_models():
         cost: int = 5
         inner_inner: InnerInnerModel
 
-    class NestedModel(DatabaseModel):
-        player_id: IndexPrimaryKeyField
-        unit_class: IndexSecondaryKeyField = IndexSecondaryKeyField(order=2)
-        tier: IndexSecondaryKeyField = IndexSecondaryKeyField(order=1)
+    class NestedModel(DatabaseModelV2):
+        player_id: str
+        unit_class: str
+        tier: str
         name: str = "Foo"
         values: set = {1, 2, 3, 4}
         cost: int = 4
         inner_model: InnerModel
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, list[str]]:
+            return {"main-index": ["player_id", "unit_class", "tier"]}
 
     mock_dynamodb().start()
     table = Table(
@@ -817,6 +767,6 @@ def test_nested_models():
             "inner_inner": {"baz": "baz"},
         },
         "gsi_pk": "456",
-        "gsi_sk": "NestedModel|EPIC|Mage",
+        "gsi_sk": "NestedModel|Mage|EPIC",
         "type": "NestedModel",
     }

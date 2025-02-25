@@ -37,8 +37,8 @@ class BeginsWith(Condition):
         return Key(key).begins_with(self.value)
 
     def enrich(self, model_class, **kwargs):
-        if not self.value.startswith(model_class.model_type()) and model_class.include_type_in_sort_key():
-            self.value = f"{model_class.model_type()}|{self.value}"
+        if not self.value.startswith(model_class.type()):
+            self.value = f"{model_class.type()}|{self.value}"
 
 
 class LessThan(Condition):
