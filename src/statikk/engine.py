@@ -13,22 +13,23 @@ from statikk.expressions import UpdateExpressionBuilder
 from statikk.models import (
     DatabaseModel,
     GSI,
-    Index,
-    IndexPrimaryKeyField,
-    IndexSecondaryKeyField,
     KeySchema,
 )
 
-from aws_xray_sdk.core import xray_recorder
 from aws_xray_sdk.core import patch_all
 
 patch_all()
+
 
 class InvalidIndexNameError(Exception):
     pass
 
 
 class IncorrectSortKeyError(Exception):
+    pass
+
+
+class IncorrectHashKeyError(Exception):
     pass
 
 
@@ -56,8 +57,6 @@ class Table:
             for model in self.models:
                 self._set_index_fields(model, idx)
                 model.set_table_ref(self)
-                if "type" not in model.model_fields:
-                    model.model_fields["type"] = FieldInfo(annotation=str, default=model.model_type(), required=False)
         self._client = None
         self._dynamodb_table = None
 
@@ -185,6 +184,8 @@ class Table:
             raise ItemNotFoundError(f"{model_class} with id '{id}' not found.")
         data = raw_data["Item"]
         for key, value in data.items():
+            if key == "type":
+                continue
             data[key] = self._deserialize_value(value, model_class.model_fields[key])
         return model_class(**data)
 
@@ -207,7 +208,7 @@ class Table:
         always prefixed with the type of the model to avoid collisions between different model types.
 
         Example:
-            class Card(DatabaseModel):
+            class Card(DatabaseModelV2):
                 id: str
                 player_id: IndexPrimaryKeyField
                 type: IndexSecondaryKeyField
@@ -228,6 +229,8 @@ class Table:
         data = self._serialize_item(model)
         self._get_dynamodb_table().put_item(Item=data)
         for key, value in data.items():
+            if key == "type":
+                continue
             data[key] = self._deserialize_value(value, model.model_fields[key])
         return type(model)(**data)
 
@@ -252,11 +255,11 @@ class Table:
             for prefixed_attribute, value in expression_attribute_values.items():
                 expression_attribute_values[prefixed_attribute] = self._serialize_value(value)
                 attribute = prefixed_attribute.replace(":", "")
-                if model.model_fields[attribute].annotation is IndexSecondaryKeyField:
-                    idx_field = getattr(model, attribute)
-                    for idx in idx_field.index_names:
-                        idx_field.value = value
-                        changed_index_values.add(idx)
+                for index_name, index_fields in model.index_definitions().items():
+                    if attribute in index_fields.sk_fields:
+                        setattr(model, attribute, value)
+                        changed_index_values.add(index_name)
+
             return changed_index_values
 
         changed_index_values = _find_changed_indexes()
@@ -279,6 +282,8 @@ class Table:
         response = self._get_dynamodb_table().update_item(**request)
         data = response["Attributes"]
         for key, value in data.items():
+            if key == "type":
+                continue
             data[key] = self._deserialize_value(value, model.model_fields[key])
         return type(model)(**data)
 
@@ -317,8 +322,8 @@ class Table:
             raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
         index = index_filter[0]
         key_condition = hash_key.evaluate(index.hash_key.name)
-        if range_key is None and model_class.include_type_in_sort_key():
-            range_key = BeginsWith(model_class.model_type())
+        if range_key is None and "type" not in model_class.index_definitions()[index_name].pk_fields:
+            range_key = BeginsWith(model_class.type())
         if range_key:
             range_key.enrich(model_class=model_class)
             key_condition = key_condition & range_key.evaluate(index.sort_key.name)
@@ -400,7 +405,7 @@ class Table:
     def _prepare_model_data(
         self,
         item: DatabaseModel,
-        indexes: List[Index],
+        indexes: List[GSI],
         force_override_index_fields: bool = False,
     ) -> Dict[str, Any]:
         for idx in indexes:
@@ -421,6 +426,8 @@ class Table:
 
     def _deserialize_item(self, item: Dict[str, Any], model_class: Type[DatabaseModel]):
         for key, value in item.items():
+            if key == "type":
+                continue
             item[key] = self._deserialize_value(value, model_class.model_fields[key])
         return model_class(**item)
 
@@ -442,7 +449,7 @@ class Table:
             return {key: self._serialize_value(item) for key, item in value.items() if item is not None}
         return value
 
-    def _set_index_fields(self, model: DatabaseModel | Type[DatabaseModel], idx: GSI):
+    def _set_index_fields(self, model: Type[DatabaseModel], idx: GSI):
         model_fields = model.model_fields
         if idx.hash_key.name not in model_fields:
             model_fields[idx.hash_key.name] = FieldInfo(annotation=idx.hash_key.type, default=None, required=False)
@@ -450,24 +457,12 @@ class Table:
             model_fields[idx.sort_key.name] = FieldInfo(annotation=idx.sort_key.type, default=None, required=False)
 
     def _get_sort_key_value(self, model: DatabaseModel, idx: GSI) -> str:
-        sort_key_fields_unordered = [
-            (field_name, getattr(model, field_name).order)
-            for field_name, field_info in model.model_fields.items()
-            if field_info.annotation is not None
-            if field_info.annotation is IndexSecondaryKeyField and idx.name in getattr(model, field_name).index_names
-        ]
-
-        if len(sort_key_fields_unordered) == idx.sort_key is not None:
+        sort_key_fields = model.index_definitions().get(idx.name, []).sk_fields
+        if len(sort_key_fields) == 0:
             raise IncorrectSortKeyError(f"Model {model.__class__} does not have a sort key defined.")
-        if sort_key_fields_unordered[0][1] is not None:
-            sort_key_fields_unordered.sort(key=lambda x: x[1])
 
-        sort_key_fields = [field[0] for field in sort_key_fields_unordered]
-
-        if len(sort_key_fields) == 0 and model.include_type_in_sort_key():
-            return model.model_type()
         if idx.sort_key.type is not str:
-            value = getattr(model, sort_key_fields[0]).value
+            value = getattr(model, sort_key_fields[0])
             if type(value) is not idx.sort_key.type:
                 raise IncorrectSortKeyError(
                     f"Incorrect sort key type. Sort key type for sort key '{idx.sort_key.name}' should be: "
@@ -478,32 +473,23 @@ class Table:
             value = value or idx.sort_key.default
             return self._serialize_value(value)
 
-        sort_key_values: List[str] = []
-        if model.include_type_in_sort_key() and model.model_type() not in sort_key_values:
-            sort_key_values.append(model.model_type())
+        sort_key_values = []
+        if "type" not in model.index_definitions()[idx.name].pk_fields:
+            sort_key_values.append(model.type())
+        for sort_key_field in sort_key_fields:
+            if sort_key_field in model.model_fields.keys():
+                sort_key_values.append(getattr(model, sort_key_field))
 
-        for field in sort_key_fields:
-            value = getattr(model, field).value
-            sort_key_values.append(value)
         return self.delimiter.join(sort_key_values)
 
     def _compose_index_values(self, model: DatabaseModel, idx: GSI) -> Dict[str, Any]:
-        model_fields = model.model_fields
-        hash_key_field = [
-            field_name
-            for field_name, field_info in model_fields.items()
-            if field_info.annotation is not None
-            if field_info.annotation is IndexPrimaryKeyField and idx.name in getattr(model, field_name).index_names
-        ]
-        if len(hash_key_field) == 0 and model.type_is_primary_key():
-            hash_key_field.append(model.model_type())
-        hash_key_field = hash_key_field[0]
+        hash_key_fields = model.index_definitions().get(idx.name, []).pk_fields
+
+        if len(hash_key_fields) == 0:
+            raise IncorrectHashKeyError(f"Model {model.__class__} does not have a hash key defined.")
 
         def _get_hash_key_value():
-            if hash_key_field == model.model_type():
-                return model.model_type()
-            else:
-                return getattr(model, hash_key_field).value
+            return self.delimiter.join([self._serialize_value(model.get_attribute(field)) for field in hash_key_fields])
 
         return {
             idx.hash_key.name: _get_hash_key_value(),
