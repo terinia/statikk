@@ -11,15 +11,11 @@ from boto3.dynamodb.types import TypeDeserializer, Decimal
 from statikk.conditions import Condition, Equals, BeginsWith
 from statikk.expressions import UpdateExpressionBuilder
 from statikk.models import (
-    DatabaseModelV2,
+    DatabaseModel,
     GSI,
-    Index,
-    IndexPrimaryKeyField,
-    IndexSecondaryKeyField,
     KeySchema,
 )
 
-from aws_xray_sdk.core import xray_recorder
 from aws_xray_sdk.core import patch_all
 
 patch_all()
@@ -33,6 +29,10 @@ class IncorrectSortKeyError(Exception):
     pass
 
 
+class IncorrectHashKeyError(Exception):
+    pass
+
+
 class ItemNotFoundError(Exception):
     pass
 
@@ -41,7 +41,7 @@ class Table:
     def __init__(
         self,
         name: str,
-        models: List[Type[DatabaseModelV2]],
+        models: List[Type[DatabaseModel]],
         key_schema: KeySchema,
         indexes: List[GSI] = Optional[None],
         delimiter: str = "|",
@@ -166,7 +166,7 @@ class Table:
     def get_item(
         self,
         id: str,
-        model_class: Type[DatabaseModelV2],
+        model_class: Type[DatabaseModel],
         sort_key: Optional[Any] = None,
         consistent_read: bool = False,
     ):
@@ -197,7 +197,7 @@ class Table:
         key = {self.key_schema.hash_key: id}
         self._get_dynamodb_table().delete_item(Key=key)
 
-    def put_item(self, model: DatabaseModelV2) -> DatabaseModelV2:
+    def put_item(self, model: DatabaseModel) -> DatabaseModel:
         """
         Puts an item into the database.
 
@@ -238,7 +238,7 @@ class Table:
         self,
         hash_key: str,
         update_builder: UpdateExpressionBuilder,
-        model: DatabaseModelV2,
+        model: DatabaseModel,
         range_key: Optional[str] = None,
     ):
         (
@@ -256,7 +256,7 @@ class Table:
                 expression_attribute_values[prefixed_attribute] = self._serialize_value(value)
                 attribute = prefixed_attribute.replace(":", "")
                 for index_name, index_fields in model.index_definitions().items():
-                    if attribute in index_fields:
+                    if attribute in index_fields.sk_fields:
                         setattr(model, attribute, value)
                         changed_index_values.add(index_name)
 
@@ -297,7 +297,7 @@ class Table:
     def query_index(
         self,
         hash_key: Union[Condition | str],
-        model_class: Type[DatabaseModelV2],
+        model_class: Type[DatabaseModel],
         range_key: Optional[Condition] = None,
         filter_condition: Optional[ComparisonCondition] = None,
         index_name: Optional[str] = None,
@@ -322,7 +322,7 @@ class Table:
             raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
         index = index_filter[0]
         key_condition = hash_key.evaluate(index.hash_key.name)
-        if range_key is None and not index_name in model_class.type_is_primary_key():
+        if range_key is None and "type" not in model_class.index_definitions()[index_name].pk_fields:
             range_key = BeginsWith(model_class.type())
         if range_key:
             range_key.enrich(model_class=model_class)
@@ -343,7 +343,7 @@ class Table:
 
     def scan(
         self,
-        model_class: Type[DatabaseModelV2],
+        model_class: Type[DatabaseModel],
         filter_condition: Optional[ComparisonCondition] = None,
         consistent_read: bool = False,
     ):
@@ -371,8 +371,8 @@ class Table:
         return {k: deserializer.deserialize(v) for k, v in item.items()}
 
     def batch_get_items(
-        self, ids: List[str], model_class: Type[DatabaseModelV2], batch_size: int = 100
-    ) -> List[DatabaseModelV2]:
+        self, ids: List[str], model_class: Type[DatabaseModel], batch_size: int = 100
+    ) -> List[DatabaseModel]:
         dynamodb = self._dynamodb_client()
 
         id_batches = [ids[i : i + batch_size] for i in range(0, len(ids), batch_size)]
@@ -404,8 +404,8 @@ class Table:
 
     def _prepare_model_data(
         self,
-        item: DatabaseModelV2,
-        indexes: List[Index],
+        item: DatabaseModel,
+        indexes: List[GSI],
         force_override_index_fields: bool = False,
     ) -> Dict[str, Any]:
         for idx in indexes:
@@ -418,13 +418,13 @@ class Table:
         item.model_rebuild(force=True)
         return item.model_dump()
 
-    def _serialize_item(self, item: DatabaseModelV2):
+    def _serialize_item(self, item: DatabaseModel):
         data = self._prepare_model_data(item, self.indexes)
         for key, value in data.items():
             data[key] = self._serialize_value(value)
         return data
 
-    def _deserialize_item(self, item: Dict[str, Any], model_class: Type[DatabaseModelV2]):
+    def _deserialize_item(self, item: Dict[str, Any], model_class: Type[DatabaseModel]):
         for key, value in item.items():
             if key == "type":
                 continue
@@ -449,18 +449,16 @@ class Table:
             return {key: self._serialize_value(item) for key, item in value.items() if item is not None}
         return value
 
-    def _set_index_fields(self, model: DatabaseModelV2, idx: GSI):
+    def _set_index_fields(self, model: Type[DatabaseModel], idx: GSI):
         model_fields = model.model_fields
         if idx.hash_key.name not in model_fields:
             model_fields[idx.hash_key.name] = FieldInfo(annotation=idx.hash_key.type, default=None, required=False)
         if idx.sort_key.name not in model_fields:
             model_fields[idx.sort_key.name] = FieldInfo(annotation=idx.sort_key.type, default=None, required=False)
 
-    def _get_sort_key_value(self, model: DatabaseModelV2, idx: GSI) -> str:
-        index_definitions = model.index_definitions().get(idx.name, [])
-        type_is_primary_key = idx.name in model.type_is_primary_key()
-        sort_key_fields = index_definitions[1:] if not type_is_primary_key else index_definitions
-        if not type_is_primary_key and len(index_definitions) <= 1:
+    def _get_sort_key_value(self, model: DatabaseModel, idx: GSI) -> str:
+        sort_key_fields = model.index_definitions().get(idx.name, []).sk_fields
+        if len(sort_key_fields) == 0:
             raise IncorrectSortKeyError(f"Model {model.__class__} does not have a sort key defined.")
 
         if idx.sort_key.type is not str:
@@ -476,33 +474,29 @@ class Table:
             return self._serialize_value(value)
 
         sort_key_values = []
-        if not type_is_primary_key:
+        if "type" not in model.index_definitions()[idx.name].pk_fields:
             sort_key_values.append(model.type())
-        for field_name, field_value in model.model_fields.items():
-            if field_name in sort_key_fields:
-                sort_key_values.append(getattr(model, field_name))
+        for sort_key_field in sort_key_fields:
+            if sort_key_field in model.model_fields.keys():
+                sort_key_values.append(getattr(model, sort_key_field))
 
         return self.delimiter.join(sort_key_values)
 
-    def _compose_index_values(self, model: DatabaseModelV2, idx: GSI) -> Dict[str, Any]:
-        model_fields = model.model_fields
-        hash_key_field = model.index_definitions().get(idx.name, [])
-        if len(hash_key_field) == 0 and model.type_is_primary_key():
-            hash_key_field.append(model.model_type())
-        hash_key_field = hash_key_field[0]
+    def _compose_index_values(self, model: DatabaseModel, idx: GSI) -> Dict[str, Any]:
+        hash_key_fields = model.index_definitions().get(idx.name, []).pk_fields
+
+        if len(hash_key_fields) == 0:
+            raise IncorrectHashKeyError(f"Model {model.__class__} does not have a hash key defined.")
 
         def _get_hash_key_value():
-            if idx.name in model.type_is_primary_key():
-                return model.type()
-            else:
-                return getattr(model, model.index_definitions()[idx.name][0])
+            return self.delimiter.join([self._serialize_value(model.get_attribute(field)) for field in hash_key_fields])
 
         return {
             idx.hash_key.name: _get_hash_key_value(),
             idx.sort_key.name: self._get_sort_key_value(model, idx),
         }
 
-    def _perform_batch_write(self, put_items: List[DatabaseModelV2], delete_items: List[DatabaseModelV2]):
+    def _perform_batch_write(self, put_items: List[DatabaseModel], delete_items: List[DatabaseModel]):
         if len(put_items) == 0 and len(delete_items) == 0:
             return
 
@@ -524,13 +518,13 @@ class Table:
 class BatchWriteContext:
     def __init__(self, app: Table):
         self._table = app
-        self._put_items: List[DatabaseModelV2] = []
-        self._delete_items: List[DatabaseModelV2] = []
+        self._put_items: List[DatabaseModel] = []
+        self._delete_items: List[DatabaseModel] = []
 
-    def put(self, item: DatabaseModelV2):
+    def put(self, item: DatabaseModel):
         self._put_items.append(item)
 
-    def delete(self, item: DatabaseModelV2):
+    def delete(self, item: DatabaseModel):
         self._delete_items.append(item)
 
     def __enter__(self):

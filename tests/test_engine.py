@@ -14,14 +14,15 @@ from statikk.engine import (
     ItemNotFoundError,
 )
 from statikk.models import (
-    DatabaseModelV2,
+    DatabaseModel,
     KeySchema,
     GSI,
     Key,
+    IndexFieldConfig,
 )
 
 
-class MyAwesomeModel(DatabaseModelV2):
+class MyAwesomeModel(DatabaseModel):
     player_id: str
     tier: str
     name: str = "Foo"
@@ -31,43 +32,46 @@ class MyAwesomeModel(DatabaseModelV2):
     created_at: Optional[datetime] = None
 
     @classmethod
-    def index_definitions(cls) -> dict[str, list[str]]:
-        return {"main-index": ["player_id", "tier"]}
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+        return {"main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["tier"])}
 
     @classmethod
     def type(cls) -> str:
         return "MyAwesomeModel"
 
 
-class SimpleModel(DatabaseModelV2):
+class SimpleModel(DatabaseModel):
     player_id: str
     board_id: str
 
     @classmethod
-    def index_definitions(cls) -> dict[str, list[str]]:
-        return {"main-index": ["player_id", "board_id"]}
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+        return {"main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["board_id"])}
 
     @classmethod
     def type(cls) -> str:
         return "SimpleModel"
 
 
-class DoubleIndexModel(DatabaseModelV2):
+class DoubleIndexModel(DatabaseModel):
     player_id: str
     tier: str
     card_template_id: str
     added_at: datetime
 
     @classmethod
-    def index_definitions(cls) -> dict[str, list[str]]:
-        return {"main-index": ["player_id", "tier"], "secondary-index": ["card_template_id", "added_at"]}
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+        return {
+            "main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["tier"]),
+            "secondary-index": IndexFieldConfig(pk_fields=["card_template_id"], sk_fields=["added_at"]),
+        }
 
     @classmethod
     def type(cls) -> str:
         return "DoubleIndexModel"
 
 
-class MultiIndexModel(DatabaseModelV2):
+class MultiIndexModel(DatabaseModel):
     player_id: str
 
     card_template_id: str
@@ -79,11 +83,14 @@ class MultiIndexModel(DatabaseModelV2):
         return "MultiIndexModel"
 
     @classmethod
-    def index_definitions(cls) -> dict[str, list[str]]:
-        return {"main-index": ["player_id", "tier"], "secondary-index": ["card_template_id", "tier"]}
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+        return {
+            "main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["tier"]),
+            "secondary-index": IndexFieldConfig(pk_fields=["card_template_id"], sk_fields=["tier"]),
+        }
 
 
-class SomeOtherIndexModel(DatabaseModelV2):
+class SomeOtherIndexModel(DatabaseModel):
     player_id: str
     tier: str
 
@@ -92,8 +99,8 @@ class SomeOtherIndexModel(DatabaseModelV2):
         return "SomeOtherIndexModel"
 
     @classmethod
-    def index_definitions(cls) -> dict[str, list[str]]:
-        return {"my-awesome-index": ["player_id", "tier"]}
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+        return {"my-awesome-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["tier"])}
 
 
 def _create_dynamodb_table(table):
@@ -478,24 +485,19 @@ def test_table_delegates():
 
 
 def test_type_is_primary_key():
-    class TypeIsPrimaryKeyModel(DatabaseModelV2):
+    class TypeIsPrimaryKeyModel(DatabaseModel):
         tier: str
         foo: str
 
         @classmethod
-        def index_definitions(cls) -> dict[str, list[str]]:
-            return {"main-index": ["tier"], "secondary-index": ["foo", "tier"]}
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {
+                "main-index": IndexFieldConfig(pk_fields=["type"], sk_fields=["tier"]),
+                "secondary-index": IndexFieldConfig(pk_fields=["foo"], sk_fields=["tier"]),
+            }
 
         @classmethod
-        def type_is_primary_key(cls) -> list[str]:
-            return ["main-index"]
-
-        @classmethod
-        def include_type_in_sort_key(cls):
-            return False
-
-        @classmethod
-        def type(cls):
+        def type(cls) -> str:
             return "my-type"
 
     mock_dynamodb().start()
@@ -666,16 +668,12 @@ def test_query_no_range_key_provided():
 
 
 def test_query_no_range_is_provided_but_model_does_not_include_type_in_range_key():
-    class Model(DatabaseModelV2):
+    class Model(DatabaseModel):
         tier: str
 
         @classmethod
-        def type_is_primary_key(cls) -> list[str]:
-            return ["main-index"]
-
-        @classmethod
-        def index_definitions(cls) -> dict[str, list[str]]:
-            return {"main-index": ["tier"]}
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(pk_fields=["type"], sk_fields=["tier"])}
 
     mock_dynamodb().start()
     table = Table(
@@ -713,7 +711,7 @@ def test_nested_models():
         cost: int = 5
         inner_inner: InnerInnerModel
 
-    class NestedModel(DatabaseModelV2):
+    class NestedModel(DatabaseModel):
         player_id: str
         unit_class: str
         tier: str
@@ -723,8 +721,8 @@ def test_nested_models():
         inner_model: InnerModel
 
         @classmethod
-        def index_definitions(cls) -> dict[str, list[str]]:
-            return {"main-index": ["player_id", "unit_class", "tier"]}
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["unit_class", "tier"])}
 
     mock_dynamodb().start()
     table = Table(

@@ -10,6 +10,7 @@ Example usage of this module:
     from statikk.conditions import Equals, BeginsWith
     app.query(range_key=Equals("123"), hash_key=BeginsWith("abc"))
 """
+
 from abc import ABC, abstractmethod
 from boto3.dynamodb.conditions import Key, ComparisonCondition
 from typing import Any
