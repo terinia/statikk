@@ -1,16 +1,16 @@
 from _decimal import Decimal
 from datetime import datetime, timezone
 from typing import List, Optional
-from pydantic import BaseModel
+
 import pytest
 from boto3.dynamodb.conditions import Attr
 from moto import mock_dynamodb
+from pydantic import BaseModel
 
 from statikk.conditions import Equals, BeginsWith
 from statikk.engine import (
     Table,
     InvalidIndexNameError,
-    IncorrectSortKeyError,
     ItemNotFoundError,
 )
 from statikk.models import (
@@ -19,6 +19,7 @@ from statikk.models import (
     GSI,
     Key,
     IndexFieldConfig,
+    TrackingMixin,
 )
 
 
@@ -699,10 +700,10 @@ def test_query_no_range_is_provided_but_model_does_not_include_type_in_range_key
 
 
 def test_nested_models():
-    class InnerInnerModel(BaseModel):
+    class InnerInnerModel(BaseModel, TrackingMixin):
         baz: str
 
-    class InnerModel(BaseModel):
+    class InnerModel(BaseModel, TrackingMixin):
         foo: str
         values: List[datetime] = [
             datetime(2023, 9, 9, 12, 0, 0),

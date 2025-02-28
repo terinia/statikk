@@ -5,7 +5,7 @@ from uuid import uuid4
 from typing import Optional, List, Any, Set, Type
 
 from boto3.dynamodb.conditions import ComparisonCondition
-from pydantic import BaseModel, model_serializer, model_validator
+from pydantic import BaseModel, model_serializer, model_validator, Field
 from pydantic.fields import FieldInfo, Field
 from pydantic_core._pydantic_core import PydanticUndefined
 
@@ -48,8 +48,42 @@ class IndexFieldConfig(BaseModel):
     sk_fields: list[str] = []
 
 
-class DatabaseModel(BaseModel):
+class TrackingMixin:
+    _original_hash: int = Field(exclude=True)
+
+    def __init__(self):
+        self._original_hash = self._recursive_hash()
+
+    def _recursive_hash(self) -> int:
+        values = []
+        for field_name in self.model_fields:
+            if not hasattr(self, field_name):
+                continue
+            value = getattr(self, field_name)
+            values.append(self._make_hashable(value))
+
+        return hash(tuple(values))
+
+    def _make_hashable(self, value: Any) -> Any:
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return value
+        elif isinstance(value, list) or isinstance(value, set):
+            return tuple(self._make_hashable(item) for item in value)
+        elif isinstance(value, dict):
+            return tuple((self._make_hashable(k), self._make_hashable(v)) for k, v in sorted(value.items()))
+        elif isinstance(value, BaseModel):
+            return value._recursive_hash() if hasattr(value, "_recursive_hash") else hash(value)
+        else:
+            return hash(value)
+
+    @property
+    def was_modified(self) -> bool:
+        return self._recursive_hash() != self._original_hash
+
+
+class DatabaseModel(BaseModel, TrackingMixin):
     id: str = Field(default_factory=lambda: str(uuid4()))
+    _parent: Optional[DatabaseModel] = None
 
     @classmethod
     def type(cls) -> str:
@@ -66,6 +100,10 @@ class DatabaseModel(BaseModel):
     @classmethod
     def batch_write(cls):
         return cls._table.batch_write()
+
+    @classmethod
+    def is_nested(cls) -> bool:
+        return False
 
     @classmethod
     def query(
@@ -129,7 +167,37 @@ class DatabaseModel(BaseModel):
         data["type"] = self.type()
         return data
 
+    @model_validator(mode="after")
+    def initialize_tracking(self):
+        self._original_hash = self._recursive_hash()
+        self._set_parent_references()
+
+        return self
+
     def get_attribute(self, attribute_name: str):
         if attribute_name == "type":
             return self.type()
         return getattr(self, attribute_name)
+
+    def _set_parent_to_field(self, field: DatabaseModel, parent: DatabaseModel):
+        if field._parent:
+            return  # Already set
+        field._parent = parent
+        field._set_parent_references()
+
+    def _set_parent_references(self):
+        for field_name, field_value in self:
+            if isinstance(field_value, DatabaseModel):
+                self._set_parent_to_field(field_value, self)
+            elif isinstance(field_value, list):
+                for item in field_value:
+                    if isinstance(item, DatabaseModel):
+                        self._set_parent_to_field(item, self)
+            elif isinstance(field_value, set):
+                for item in field_value:
+                    if isinstance(item, DatabaseModel):
+                        self._set_parent_to_field(item, self)
+            elif isinstance(field_value, dict):
+                for key, value in field_value.items():
+                    if isinstance(value, DatabaseModel):
+                        self._set_parent_to_field(value, self)
