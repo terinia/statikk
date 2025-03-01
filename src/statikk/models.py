@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing
+import logging
 from uuid import uuid4
 from typing import Optional, List, Any, Set, Type
 
@@ -11,9 +12,12 @@ from pydantic_core._pydantic_core import PydanticUndefined
 
 from statikk.conditions import Condition
 from statikk.expressions import DatabaseModelUpdateExpressionBuilder
+from statikk.fields import FIELD_STATIKK_TYPE
 
 if typing.TYPE_CHECKING:
     from statikk.engine import Table
+
+logger = logging.getLogger(__name__)
 
 
 class Key(BaseModel):
@@ -55,11 +59,46 @@ class TrackingMixin:
         self._original_hash = self._recursive_hash()
 
     def _recursive_hash(self) -> int:
+        """
+        Compute a hash value for the model, ignoring nested DatabaseModel instances.
+
+        This ensures that changes to child models don't affect the parent's hash.
+
+        Returns:
+            A hash value representing the model's non-model fields.
+        """
         values = []
         for field_name in self.model_fields:
             if not hasattr(self, field_name):
                 continue
+
+            if field_name.startswith("_"):
+                continue
+
             value = getattr(self, field_name)
+
+            if hasattr(value, "__class__") and issubclass(value.__class__, DatabaseModel):
+                continue
+
+            if isinstance(value, list) or isinstance(value, set):
+                contains_model = False
+                for item in value:
+                    if hasattr(item, "__class__") and issubclass(item.__class__, DatabaseModel):
+                        contains_model = True
+                        break
+                if contains_model:
+                    continue
+
+            if isinstance(value, dict):
+                contains_model = False
+                if not contains_model:
+                    for val in value.values():
+                        if hasattr(val, "__class__") and issubclass(val.__class__, DatabaseModel):
+                            contains_model = True
+                            break
+                if contains_model:
+                    continue
+
             values.append(self._make_hashable(value))
 
         return hash(tuple(values))
@@ -74,7 +113,13 @@ class TrackingMixin:
         elif isinstance(value, BaseModel):
             return value._recursive_hash() if hasattr(value, "_recursive_hash") else hash(value)
         else:
-            return hash(value)
+            try:
+                return hash(value)
+            except Exception:
+                logger.warning(
+                    f"{type(value)} is unhashable, tracking will not work. Consider implementing the TrackingMixin for this type."
+                )
+        return value
 
     @property
     def was_modified(self) -> bool:
@@ -84,6 +129,7 @@ class TrackingMixin:
 class DatabaseModel(BaseModel, TrackingMixin):
     id: str = Field(default_factory=lambda: str(uuid4()))
     _parent: Optional[DatabaseModel] = None
+    _model_types_in_hierarchy: dict[str, Type[DatabaseModel]] = {}
 
     @classmethod
     def type(cls) -> str:
@@ -105,6 +151,10 @@ class DatabaseModel(BaseModel, TrackingMixin):
     def is_nested(cls) -> bool:
         return False
 
+    @property
+    def is_simple_object(self) -> bool:
+        return len(self._model_types_in_hierarchy) == 1
+
     @classmethod
     def query(
         cls,
@@ -114,6 +164,22 @@ class DatabaseModel(BaseModel, TrackingMixin):
         index_name: Optional[str] = None,
     ):
         return cls._table.query_index(
+            hash_key=hash_key,
+            model_class=cls,
+            range_key=range_key,
+            filter_condition=filter_condition,
+            index_name=index_name,
+        )
+
+    @classmethod
+    def query_hierarchy(
+        cls,
+        hash_key: Union[Condition | str],
+        range_key: Optional[Condition] = None,
+        filter_condition: Optional[ComparisonCondition] = None,
+        index_name: Optional[str] = None,
+    ) -> DatabaseModel:
+        return cls._table.query_hierarchy(
             hash_key=hash_key,
             model_class=cls,
             range_key=range_key,
@@ -159,45 +225,116 @@ class DatabaseModel(BaseModel, TrackingMixin):
         filter_condition: Optional[ComparisonCondition] = None,
         consistent_read: bool = False,
     ):
-        return cls._table.scan(model_class=cls, filter_condition=filter_condition)
+        return cls._table.scan(filter_condition=filter_condition)
 
     @model_serializer(mode="wrap")
     def serialize_model(self, handler):
         data = handler(self)
-        data["type"] = self.type()
+        data[FIELD_STATIKK_TYPE] = self.type()
         return data
 
     @model_validator(mode="after")
     def initialize_tracking(self):
         self._original_hash = self._recursive_hash()
-        self._set_parent_references()
+        self._model_types_in_hierarchy[self.type()] = type(self)
+        if not self.is_nested():
+            self._set_parent_references(self)
 
         return self
 
+    def split_to_simple_objects(self, items: Optional[list[DatabaseModel]] = None) -> list[DatabaseModel]:
+        """
+        Split a complex nested DatabaseModel into a list of individual DatabaseModel instances.
+
+        This method recursively traverses the model and all its nested DatabaseModel instances,
+        collecting them into a flat list for simpler processing or storage.
+
+        Args:
+            items: An optional existing list to add items to. If None, a new list is created.
+
+        Returns:
+            A list containing this model and all nested DatabaseModel instances.
+        """
+        if items is None:
+            items = [self]
+        else:
+            if self not in items:
+                items.append(self)
+
+        # Iterate through all fields of the model
+        for field_name, field_value in self:
+            # Skip fields that start with underscore (private fields)
+            if field_name.startswith("_"):
+                continue
+
+            # Handle direct DatabaseModel instances
+            if hasattr(field_value, "__class__") and issubclass(field_value.__class__, DatabaseModel):
+                if field_value not in items:
+                    items.append(field_value)
+                field_value.split_to_simple_objects(items)
+
+            # Handle lists containing DatabaseModel instances
+            elif isinstance(field_value, list):
+                for item in field_value:
+                    if hasattr(item, "__class__") and issubclass(item.__class__, DatabaseModel):
+                        if item not in items:
+                            items.append(item)
+                        item.split_to_simple_objects(items)
+
+            # Handle sets containing DatabaseModel instances
+            elif isinstance(field_value, set):
+                for item in field_value:
+                    if hasattr(item, "__class__") and issubclass(item.__class__, DatabaseModel):
+                        if item not in items:
+                            items.append(item)
+                        item.split_to_simple_objects(items)
+
+            # Handle dictionaries that may contain DatabaseModel instances
+            elif isinstance(field_value, dict):
+                # Check dictionary keys
+                for key in field_value.keys():
+                    if hasattr(key, "__class__") and issubclass(key.__class__, DatabaseModel):
+                        if key not in items:
+                            items.append(key)
+                        key.split_to_simple_objects(items)
+
+                # Check dictionary values
+                for value in field_value.values():
+                    if hasattr(value, "__class__") and issubclass(value.__class__, DatabaseModel):
+                        if value not in items:
+                            items.append(value)
+                        value.split_to_simple_objects(items)
+
+        return items
+
     def get_attribute(self, attribute_name: str):
-        if attribute_name == "type":
+        if attribute_name == FIELD_STATIKK_TYPE:
             return self.type()
         return getattr(self, attribute_name)
 
-    def _set_parent_to_field(self, field: DatabaseModel, parent: DatabaseModel):
+    def get_type_from_hierarchy_by_name(self, name: str) -> Optional[Type[DatabaseModel]]:
+        return self._model_types_in_hierarchy.get(name)
+
+    def _set_parent_to_field(self, field: DatabaseModel, parent: DatabaseModel, root: DatabaseModel):
         if field._parent:
             return  # Already set
         field._parent = parent
-        field._set_parent_references()
+        root._model_types_in_hierarchy[field.type()] = type(field)
+        field._set_parent_references(root)
 
-    def _set_parent_references(self):
+    def _set_parent_references(self, root: DatabaseModel):
         for field_name, field_value in self:
             if isinstance(field_value, DatabaseModel):
-                self._set_parent_to_field(field_value, self)
+                self._set_parent_to_field(field_value, self, root)
             elif isinstance(field_value, list):
                 for item in field_value:
                     if isinstance(item, DatabaseModel):
-                        self._set_parent_to_field(item, self)
+                        self._set_parent_to_field(item, self, root)
             elif isinstance(field_value, set):
                 for item in field_value:
                     if isinstance(item, DatabaseModel):
-                        self._set_parent_to_field(item, self)
+                        self._set_parent_to_field(item, self, root)
             elif isinstance(field_value, dict):
                 for key, value in field_value.items():
                     if isinstance(value, DatabaseModel):
-                        self._set_parent_to_field(value, self)
+                        self._set_parent_to_field(value, self, root)

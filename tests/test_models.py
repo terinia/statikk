@@ -28,6 +28,10 @@ class MyDatabaseModelWithList(DatabaseModel):
     nested: list[MyNestedDatabaseModel]
 
 
+class MySimpleDatabaseModel(DatabaseModel):
+    foo: str
+
+
 def test_model_hierarchy_is_correct():
     my_doubly_nested_database_model = MyDoublyNestedDatabaseModel(baz="qux")
     my_nested_database_model = MyNestedDatabaseModel(bar="baz", doubly_nested=my_doubly_nested_database_model)
@@ -38,10 +42,12 @@ def test_model_hierarchy_is_correct():
     assert not my_doubly_nested_database_model.was_modified
     assert not my_nested_database_model.was_modified
     assert not my_database_model.was_modified
+    my_nested_database_model.bar = "bazz"
+    assert not my_doubly_nested_database_model.was_modified
+    assert my_nested_database_model.was_modified
+    assert not my_database_model.was_modified
     my_doubly_nested_database_model.baz = "quux"
     assert my_doubly_nested_database_model.was_modified
-    assert my_nested_database_model.was_modified
-    assert my_database_model.was_modified
 
 
 def test_model_hierarchy_is_correct_with_list():
@@ -57,3 +63,24 @@ def test_model_hierarchy_is_correct_with_list():
     assert my_doubly_nested_database_model._parent == my_nested_database_model
     assert my_nested_database_model._parent == my_database_model
     assert my_other_nested_database_model._parent == my_database_model
+
+
+def test_models_in_hierarchy():
+    my_doubly_nested_database_model = MyDoublyNestedDatabaseModel(baz="qux")
+    my_nested_database_model = MyNestedDatabaseModel(bar="baz", doubly_nested=my_doubly_nested_database_model)
+    my_database_model = MyDatabaseModelWithList(foo="bar", nested=[my_nested_database_model])
+    assert my_database_model._model_types_in_hierarchy == {
+        "MyNestedDatabaseModel": MyNestedDatabaseModel,
+        "MyDoublyNestedDatabaseModel": MyDoublyNestedDatabaseModel,
+        "MyDatabaseModelWithList": MyDatabaseModelWithList,
+    }
+    assert my_database_model.split_to_simple_objects() == [
+        my_database_model,
+        my_nested_database_model,
+        my_doubly_nested_database_model,
+    ]
+
+
+def test_simple_model_hierarchy_returns_root():
+    my_database_model = MySimpleDatabaseModel(foo="bar")
+    assert my_database_model.split_to_simple_objects() == [my_database_model]
