@@ -27,7 +27,7 @@ class MyAwesomeModel(DatabaseModel):
     player_id: str
     tier: str
     name: str = "Foo"
-    values: set = {1, 2, 3, 4}
+    values: set[int] = {1, 2, 3, 4}
     cost: int = 4
     probability: float = 0.5
     created_at: Optional[datetime] = None
@@ -469,8 +469,8 @@ def test_table_delegates():
     models = list(MyAwesomeModel.query(hash_key=Equals("123")))
     assert len(models) == 1
     assert models[0] == saved_model
-    model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="bar")
-    model_3 = MyAwesomeModel(id="foo-3", player_id="123", tier="bar")
+    model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="bar", __statikk_type="MyAwesomeModel")
+    model_3 = MyAwesomeModel(id="foo-3", player_id="123", tier="bar", __statikk_type="MyAwesomeModel")
     with MyAwesomeModel.batch_write() as batch:
         batch.put(model_2)
         batch.put(model_3)
@@ -543,9 +543,11 @@ def test_delete_model():
         models=[MyAwesomeModel],
     )
     _create_dynamodb_table(table)
-    model = MyAwesomeModel(id="foo", player_id="123", tier="LEGENDARY")
-    model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="EPIC", name="FooFoo")
-    model_3 = MyAwesomeModel(id="foo-3", player_id="123", tier="EPIC", name="FooFooFoo")
+    model = MyAwesomeModel(id="foo", player_id="123", tier="LEGENDARY", __statikk_type="MyAwesomeModel")
+    model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="EPIC", name="FooFoo", __statikk_type="MyAwesomeModel")
+    model_3 = MyAwesomeModel(
+        id="foo-3", player_id="123", tier="EPIC", name="FooFooFoo", __statikk_type="MyAwesomeModel"
+    )
     table.put_item(model)
     table.put_item(model_2)
     table.delete_item(model.id)
@@ -843,7 +845,7 @@ def test_nested_hierarchies():
     assert hierarchy.gsi_sk == "ModelHierarchy|state"
     assert hierarchy.nested.gsi_pk == "foo_id"
     assert hierarchy.nested.gsi_sk == "ModelHierarchy|state|NestedModel|foo"
-    assert len(hierarchy.nested.doubly_nested) == 1
+    assert len(hierarchy.nested.doubly_nested) == 1  # doubly_nested_no_write is not saved to the database
     assert hierarchy.nested.doubly_nested[0].gsi_pk == "foo_id"
     assert hierarchy.nested.doubly_nested[0].gsi_sk == "ModelHierarchy|state|NestedModel|foo|DoublyNestedModel|bar"
     assert hierarchy.nested.doubly_nested[0].items[0].gsi_pk == "foo_id"
