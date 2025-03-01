@@ -6,13 +6,13 @@ from uuid import uuid4
 from typing import Optional, List, Any, Set, Type
 
 from boto3.dynamodb.conditions import ComparisonCondition
-from pydantic import BaseModel, model_serializer, model_validator, Field
+from pydantic import BaseModel, model_serializer, model_validator, Field, Extra
 from pydantic.fields import FieldInfo, Field
 from pydantic_core._pydantic_core import PydanticUndefined
 
 from statikk.conditions import Condition
 from statikk.expressions import DatabaseModelUpdateExpressionBuilder
-from statikk.fields import FIELD_STATIKK_TYPE
+from statikk.fields import FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID
 
 if typing.TYPE_CHECKING:
     from statikk.engine import Table
@@ -126,7 +126,7 @@ class TrackingMixin:
         return self._recursive_hash() != self._original_hash
 
 
-class DatabaseModel(BaseModel, TrackingMixin):
+class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
     id: str = Field(default_factory=lambda: str(uuid4()))
     _parent: Optional[DatabaseModel] = None
     _model_types_in_hierarchy: dict[str, Type[DatabaseModel]] = {}
@@ -219,6 +219,9 @@ class DatabaseModel(BaseModel, TrackingMixin):
     def batch_get(cls, ids: List[str], batch_size: int = 100):
         return cls._table.batch_get_items(ids=ids, model_class=cls, batch_size=batch_size)
 
+    def should_write_to_database(self) -> bool:
+        return True
+
     @classmethod
     def scan(
         cls,
@@ -231,6 +234,8 @@ class DatabaseModel(BaseModel, TrackingMixin):
     def serialize_model(self, handler):
         data = handler(self)
         data[FIELD_STATIKK_TYPE] = self.type()
+        if self._parent:
+            data[FIELD_STATIKK_PARENT_ID] = self._parent.id
         return data
 
     @model_validator(mode="after")
@@ -291,13 +296,6 @@ class DatabaseModel(BaseModel, TrackingMixin):
 
             # Handle dictionaries that may contain DatabaseModel instances
             elif isinstance(field_value, dict):
-                # Check dictionary keys
-                for key in field_value.keys():
-                    if hasattr(key, "__class__") and issubclass(key.__class__, DatabaseModel):
-                        if key not in items:
-                            items.append(key)
-                        key.split_to_simple_objects(items)
-
                 # Check dictionary values
                 for value in field_value.values():
                     if hasattr(value, "__class__") and issubclass(value.__class__, DatabaseModel):
@@ -311,6 +309,25 @@ class DatabaseModel(BaseModel, TrackingMixin):
         if attribute_name == FIELD_STATIKK_TYPE:
             return self.type()
         return getattr(self, attribute_name)
+
+    def get_nested_model_fields(self) -> set[DatabaseModel]:
+        nested_models = []
+        for field_name, field_value in self:
+            if issubclass(field_value.__class__, DatabaseModel) and field_value.is_nested():
+                nested_models.append(field_name)
+            elif isinstance(field_value, list):
+                for item in field_value:
+                    if issubclass(item.__class__, DatabaseModel) and item.is_nested():
+                        nested_models.append(field_name)
+            elif isinstance(field_value, set):
+                for item in field_value:
+                    if issubclass(item.__class__, DatabaseModel) and item.is_nested():
+                        nested_models.append(field_name)
+            elif isinstance(field_value, dict):
+                for key, value in field_value.items():
+                    if issubclass(value.__class__, DatabaseModel) and value.is_nested():
+                        nested_models.append(field_name)
+        return set(nested_models)
 
     def get_type_from_hierarchy_by_name(self, name: str) -> Optional[Type[DatabaseModel]]:
         return self._model_types_in_hierarchy.get(name)

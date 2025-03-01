@@ -772,8 +772,20 @@ def test_nested_raw_models():
 
 
 def test_nested_hierarchies():
+    class TriplyNested(DatabaseModel):
+        faz: str = "faz"
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(sk_fields=["faz"])}
+
+        @classmethod
+        def is_nested(cls) -> bool:
+            return True
+
     class DoublyNestedModel(DatabaseModel):
         bar: str
+        items: list[TriplyNested]
 
         @classmethod
         def index_definitions(cls) -> dict[str, IndexFieldConfig]:
@@ -783,9 +795,12 @@ def test_nested_hierarchies():
         def is_nested(cls) -> bool:
             return True
 
+        def should_write_to_database(self) -> bool:
+            return self.bar == "bar"
+
     class NestedModel(DatabaseModel):
         foo: str
-        doubly_nested: DoublyNestedModel
+        doubly_nested: list[DoublyNestedModel]
 
         @classmethod
         def index_definitions(cls) -> dict[str, IndexFieldConfig]:
@@ -815,24 +830,20 @@ def test_nested_hierarchies():
                 sort_key=Key(name="gsi_sk"),
             )
         ],
-        models=[ModelHierarchy, NestedModel, DoublyNestedModel],
+        models=[ModelHierarchy, NestedModel, DoublyNestedModel, TriplyNested],
     )
     _create_dynamodb_table(table)
-    doubly_nested = DoublyNestedModel(bar="bar")
-    nested = NestedModel(foo="foo", doubly_nested=doubly_nested)
+    doubly_nested = DoublyNestedModel(bar="bar", items=[TriplyNested(faz="faz")])
+    double_nested_no_write = DoublyNestedModel(bar="far", items=[TriplyNested(faz="faz")])
+    nested = NestedModel(foo="foo", doubly_nested=[doubly_nested, double_nested_no_write])
     model_hierarchy = ModelHierarchy(foo_id="foo_id", state="state", nested=nested)
     model_hierarchy.save()
     hierarchy = ModelHierarchy.query_hierarchy(hash_key=Equals("foo_id"))
     assert hierarchy.gsi_pk == "foo_id"
     assert hierarchy.gsi_sk == "ModelHierarchy|state"
-    assert nested.gsi_pk == "foo_id"
-    assert nested.gsi_sk == "ModelHierarchy|state|NestedModel|foo"
-    assert doubly_nested.gsi_pk == "foo_id"
-    assert doubly_nested.gsi_sk == "ModelHierarchy|state|NestedModel|foo|DoublyNestedModel|bar"
-    doubly_nested_models = list(
-        DoublyNestedModel.query(
-            hash_key=Equals("foo_id"), range_key=BeginsWith("ModelHierarchy|state|NestedModel|foo|DoublyNestedModel")
-        )
-    )
-    assert len(doubly_nested_models) == 1
-    assert doubly_nested_models[0].bar == "bar"
+    assert hierarchy.nested.gsi_pk == "foo_id"
+    assert hierarchy.nested.gsi_sk == "ModelHierarchy|state|NestedModel|foo"
+    assert len(hierarchy.nested.doubly_nested) == 1
+    assert hierarchy.nested.doubly_nested[0].gsi_pk == "foo_id"
+    assert hierarchy.nested.doubly_nested[0].gsi_sk == "ModelHierarchy|state|NestedModel|foo|DoublyNestedModel|bar"
+    assert hierarchy.nested.doubly_nested[0].items[0].gsi_pk == "foo_id"

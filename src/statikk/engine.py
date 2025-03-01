@@ -15,7 +15,7 @@ from statikk.models import (
     GSI,
     KeySchema,
 )
-from statikk.fields import FIELD_STATIKK_TYPE
+from statikk.fields import FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID
 
 from aws_xray_sdk.core import patch_all
 
@@ -378,11 +378,19 @@ class Table:
         last_evaluated_key = True
         while last_evaluated_key:
             items = self._get_dynamodb_table().query(**query_params)
-            hierarchy_items.extend(
-                [self._get_model_type_by_statikk_type(item[FIELD_STATIKK_TYPE])(**item) for item in items["Items"]]
-            )
+            hierarchy_items.extend([item for item in items["Items"]])
             last_evaluated_key = items.get("LastEvaluatedKey", False)
-        return self.reconstruct_hierarchy(hierarchy_items)
+
+        reconstructed_dict = self.reconstruct_hierarchy(hierarchy_items)
+
+        if not reconstructed_dict:
+            return None
+
+        model_type = reconstructed_dict.get(FIELD_STATIKK_TYPE)
+        model_class = self._get_model_type_by_statikk_type(model_type)
+
+        reconstructed_dict.pop(FIELD_STATIKK_TYPE, None)
+        return model_class(**reconstructed_dict)
 
     def scan(
         self,
@@ -461,10 +469,9 @@ class Table:
         return item
 
     def _serialize_item(self, item: DatabaseModel):
-        data = item.model_dump()
+        data = item.model_dump(exclude=item.get_nested_model_fields())
+        serialized_data = {}
         for key, value in data.items():
-            if issubclass(value.__class__, DatabaseModel) and value.is_nested():
-                continue
             data[key] = self._serialize_value(value)
         return data
 
@@ -557,6 +564,8 @@ class Table:
                     enriched_item = self._prepare_model_data(item, self.indexes)
                     if not enriched_item.was_modified:
                         continue
+                    if not enriched_item.should_write_to_database():
+                        continue
                     data = self._serialize_item(enriched_item)
                     batch.put_item(Item=data)
 
@@ -567,119 +576,236 @@ class Table:
                     data = self._serialize_item(enriched_item)
                     batch.delete_item(Key=data)
 
-    def reconstruct_hierarchy(self, models: list[DatabaseModel]) -> Optional[DatabaseModel]:
+    def reconstruct_hierarchy(self, items: list[dict]) -> Optional[dict]:
         """
-        Reconstructs a hierarchical model structure from a flat list of models.
-
-        This function identifies the top-level model and reconstructs the hierarchy
-        by setting references between parent and child models.
+        Reconstructs a hierarchical dictionary structure from a flat list of dictionaries
+        using explicit parent-child relationships and model class definitions.
 
         Args:
-            models: A flat list of DatabaseModel instances to reconstruct
+            items: A flat list of dictionaries representing models with FIELD_STATIKK_PARENT_ID
 
         Returns:
-            The top-level model with its hierarchy fully reconstructed, or None if the list is empty
+            The top-level dictionary with its hierarchy fully reconstructed, or None if the list is empty
         """
-        if not models:
+        if not items:
             return None
 
-        # Create a map of model IDs to models for quick lookup
-        models_by_id = {model.id: model for model in models}
+        # Create a map of item IDs to items for quick lookup
+        items_by_id = {item["id"]: item for item in items}
 
-        # Find potential child references within each model
-        child_models = set()
+        # Create a map of parent IDs to lists of child items
+        children_by_parent_id = {}
+        for item in items:
+            parent_id = item.get(FIELD_STATIKK_PARENT_ID)
+            if parent_id:
+                if parent_id not in children_by_parent_id:
+                    children_by_parent_id[parent_id] = []
+                children_by_parent_id[parent_id].append(item)
 
-        for model in models:
-            for field_name, field_value in model:
+        # Find the root item (the one with no parent ID)
+        root_items = [item for item in items if FIELD_STATIKK_PARENT_ID not in item]
+
+        if not root_items:
+            return None
+
+        # There should be exactly one root
+        if len(root_items) > 1:
+            root_item = root_items[0]
+        else:
+            root_item = root_items[0]
+
+        # Track processed items to avoid duplicates
+        processed_items = set()
+
+        # Reconstruct the hierarchy
+        return self._reconstruct_item_with_children(root_item, items_by_id, children_by_parent_id, processed_items)
+
+    def _reconstruct_item_with_children(
+        self, item: dict, items_by_id: dict, children_by_parent_id: dict, processed_items: set
+    ) -> dict:
+        """
+        Recursively reconstruct an item and its children using model class definitions.
+
+        Args:
+            item: The item to reconstruct
+            items_by_id: Map of all item IDs to items
+            children_by_parent_id: Map of parent IDs to lists of child items
+            processed_items: Set of already processed item IDs to avoid duplicates
+
+        Returns:
+            The reconstructed item with all child references integrated
+        """
+        # Check if this item has already been processed to avoid duplicates
+        if item["id"] in processed_items:
+            return item
+
+        # Mark this item as processed
+        processed_items.add(item["id"])
+
+        # Create a copy to avoid modifying the original
+        result = item.copy()
+
+        # Remove parent ID field as it's not needed in the final model
+        if FIELD_STATIKK_PARENT_ID in result:
+            result.pop(FIELD_STATIKK_PARENT_ID)
+
+        # Get the children of this item
+        children = children_by_parent_id.get(item["id"], [])
+
+        if not children:
+            return result
+
+        # Get the model class for this item
+        parent_model_class = self._get_model_type_by_statikk_type(item[FIELD_STATIKK_TYPE])
+
+        # Group children by their type
+        children_by_type = {}
+        for child in children:
+            child_type = child[FIELD_STATIKK_TYPE]
+            if child_type not in children_by_type:
+                children_by_type[child_type] = []
+            children_by_type[child_type].append(child)
+
+        # For each type of child, find the matching field in the parent class
+        for child_type, child_items in children_by_type.items():
+            # Get the model class for this child type
+            child_model_class = self._get_model_type_by_statikk_type(child_type)
+
+            # Find fields in the parent model that have this child's type
+            matching_fields = []
+
+            for field_name, field_info in parent_model_class.model_fields.items():
+                # Skip fields that start with underscore
                 if field_name.startswith("_"):
                     continue
 
-                # Direct reference to another model
-                if (
-                    hasattr(field_value, "__class__")
-                    and issubclass(field_value.__class__, DatabaseModel)
-                    and field_value.id in models_by_id
-                ):
-                    # Mark this as a child
-                    child_models.add(field_value.id)
+                # Get the field's annotation (type)
+                field_type = field_info.annotation
 
-                    # Replace reference with the actual model from our list
-                    setattr(model, field_name, models_by_id[field_value.id])
+                # Check if it's a direct match with the child model class
+                if field_type == child_model_class:
+                    matching_fields.append((field_name, "single"))
 
-                # List containing models
-                elif isinstance(field_value, list):
-                    for i, item in enumerate(field_value):
-                        if (
-                            hasattr(item, "__class__")
-                            and issubclass(item.__class__, DatabaseModel)
-                            and item.id in models_by_id
-                        ):
-                            # Mark this as a child
-                            child_models.add(item.id)
+                # Check if it's a list of the child model class
+                elif hasattr(field_type, "__origin__") and field_type.__origin__ == list:
+                    # Get the type parameter(s) of the list
+                    args = getattr(field_type, "__args__", [])
+                    if args and args[0] == child_model_class:
+                        matching_fields.append((field_name, "list"))
 
-                            # Replace reference with the actual model from our list
-                            field_value[i] = models_by_id[item.id]
+                # Check if it's a set of the child model class
+                elif hasattr(field_type, "__origin__") and field_type.__origin__ == set:
+                    # Get the type parameter(s) of the set
+                    args = getattr(field_type, "__args__", [])
+                    if args and args[0] == child_model_class:
+                        matching_fields.append((field_name, "set"))
 
-                # Set containing models
-                elif isinstance(field_value, set):
-                    new_set = set()
-                    for item in field_value:
-                        if (
-                            hasattr(item, "__class__")
-                            and issubclass(item.__class__, DatabaseModel)
-                            and item.id in models_by_id
-                        ):
-                            # Mark this as a child
-                            child_models.add(item.id)
+                # Check if it's a dict with the child model class as values
+                elif hasattr(field_type, "__origin__") and field_type.__origin__ == dict:
+                    # Get the type parameter(s) of the dict
+                    args = getattr(field_type, "__args__", [])
+                    if len(args) >= 2 and args[1] == child_model_class:
+                        matching_fields.append((field_name, "dict_values"))
 
-                            # Add the actual model from our list
-                            new_set.add(models_by_id[item.id])
-                        else:
-                            new_set.add(item)
+            # If we found matching fields, use them to place the child items
+            if matching_fields:
+                for field_name, container_type in matching_fields:
+                    if container_type == "list":
+                        # Initialize the field as an empty list if it doesn't exist
+                        if field_name not in result:
+                            result[field_name] = []
 
-                    # Replace the set with our updated one
-                    setattr(model, field_name, new_set)
+                        # Track IDs of items already in the list to avoid duplicates
+                        existing_ids = {
+                            item.get("id") for item in result[field_name] if isinstance(item, dict) and "id" in item
+                        }
 
-                # Dictionary with model keys or values
-                elif isinstance(field_value, dict):
-                    new_dict = {}
-                    for key, value in field_value.items():
-                        new_key = key
-                        new_value = value
+                        # Add all child items of this type to the list
+                        for child in child_items:
+                            # Skip if this child is already in the list
+                            if child["id"] in existing_ids:
+                                continue
 
-                        # Check if key is a model
-                        if (
-                            hasattr(key, "__class__")
-                            and issubclass(key.__class__, DatabaseModel)
-                            and key.id in models_by_id
-                        ):
-                            # Mark this as a child
-                            child_models.add(key.id)
-                            new_key = models_by_id[key.id]
+                            # Recursively reconstruct the child
+                            reconstructed_child = self._reconstruct_item_with_children(
+                                child, items_by_id, children_by_parent_id, processed_items
+                            )
 
-                        # Check if value is a model
-                        if (
-                            hasattr(value, "__class__")
-                            and issubclass(value.__class__, DatabaseModel)
-                            and value.id in models_by_id
-                        ):
-                            # Mark this as a child
-                            child_models.add(value.id)
-                            new_value = models_by_id[value.id]
+                            # Add to list and update tracking set
+                            result[field_name].append(reconstructed_child)
+                            existing_ids.add(child["id"])
 
-                        new_dict[new_key] = new_value
+                    elif container_type == "set":
+                        # Initialize the field as an empty set if it doesn't exist
+                        if field_name not in result:
+                            result[field_name] = []  # Use list initially, will convert to set later
 
-                    # Replace the dict with our updated one
-                    setattr(model, field_name, new_dict)
+                        # Track IDs of items already in the set to avoid duplicates
+                        existing_ids = {
+                            item.get("id") for item in result[field_name] if isinstance(item, dict) and "id" in item
+                        }
 
-        # Find the root model (the one that's not a child of any other model)
-        root_models = [model for model in models if model.id not in child_models]
+                        # Add all child items of this type to the set
+                        for child in child_items:
+                            # Skip if this child is already in the set
+                            if child["id"] in existing_ids:
+                                continue
 
-        # There should be exactly one root
-        if len(root_models) != 1:
-            raise ValueError(f"Expected 1 root model, found {len(root_models)}")
+                            # Recursively reconstruct the child
+                            reconstructed_child = self._reconstruct_item_with_children(
+                                child, items_by_id, children_by_parent_id, processed_items
+                            )
 
-        return root_models[0]
+                            # Add to set and update tracking set
+                            result[field_name].append(reconstructed_child)
+                            existing_ids.add(child["id"])
+
+                    elif container_type == "dict_values":
+                        # Initialize the field as an empty dict if it doesn't exist
+                        if field_name not in result:
+                            result[field_name] = {}
+
+                        # Add child items as values in the dict
+                        # We need a key for each value - we'll use a field from the child
+                        for child in child_items:
+                            # Find a suitable field to use as key
+                            # First preference: 'key' field if it exists
+                            # Second preference: first field that's not id, __statikk_type, etc.
+                            key_field = None
+                            if "key" in child:
+                                key_field = "key"
+                            else:
+                                for field in child.keys():
+                                    if field not in {
+                                        "id",
+                                        FIELD_STATIKK_TYPE,
+                                        FIELD_STATIKK_PARENT_ID,
+                                        "gsi_pk",
+                                        "gsi_sk",
+                                    }:
+                                        key_field = field
+                                        break
+
+                            if key_field:
+                                key = child[key_field]
+                                # Recursively reconstruct the child
+                                reconstructed_child = self._reconstruct_item_with_children(
+                                    child, items_by_id, children_by_parent_id, processed_items
+                                )
+
+                                # Add to dict
+                                result[field_name][key] = reconstructed_child
+
+                    elif container_type == "single":
+                        # Single item field - use the first child of this type
+                        if child_items:
+                            # Recursively reconstruct the child
+                            reconstructed_child = self._reconstruct_item_with_children(
+                                child_items[0], items_by_id, children_by_parent_id, processed_items
+                            )
+                            result[field_name] = reconstructed_child
+
+        return result
 
 
 class BatchWriteContext:
