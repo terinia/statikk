@@ -1,66 +1,86 @@
-from unittest.mock import patch
-
-import pytest
-from pydantic_core._pydantic_core import ValidationError
-
-from statikk.models import (
-    DatabaseModel,
-    IndexPrimaryKeyField,
-    IndexSecondaryKeyField,
-)
+from statikk.models import DatabaseModel
 
 
-def test_index_shorthand():
-    class Foo(DatabaseModel):
-        player_id: IndexSecondaryKeyField
+class MyDoublyNestedDatabaseModel(DatabaseModel):
+    baz: str
 
-        @classmethod
-        def type_is_primary_key(cls):
-            return True
-
-    with patch("statikk.models.uuid.uuid4", return_value="123"):
-        foo = Foo(player_id="abc")
-        assert foo.model_type() == "Foo"
-        assert foo.id == "123"
-        assert foo.player_id.value == "abc"
-        assert foo.player_id.index_names == ["main-index"]
+    @classmethod
+    def is_nested(cls) -> bool:
+        return True
 
 
-def test_index_configuration():
-    class FooNotMainIndex(DatabaseModel):
-        type: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["not-main-index"])
+class MyNestedDatabaseModel(DatabaseModel):
+    bar: str
+    doubly_nested: MyDoublyNestedDatabaseModel
 
-    foo = FooNotMainIndex(type="FooNotMainIndex")
-    assert foo.type.value == "FooNotMainIndex"
-    assert foo.type.index_names == ["not-main-index"]
-
-
-def test_invalid_order_config_on_indexes():
-    class InvalidOrderingModel(DatabaseModel):
-        player_id: IndexPrimaryKeyField
-        tier: IndexSecondaryKeyField = IndexSecondaryKeyField(order=1)
-        unit_class: IndexSecondaryKeyField
-
-    with pytest.raises(ValidationError):
-        InvalidOrderingModel(player_id="abc", unit_class="foo")
+    @classmethod
+    def is_nested(cls) -> bool:
+        return True
 
 
-def test_all_orders_are_configued_on_indexes():
-    class AllOrdersConfiguredModel(DatabaseModel):
-        player_id: IndexPrimaryKeyField
-        tier: IndexSecondaryKeyField = IndexSecondaryKeyField(order=1)
-        unit_class: IndexSecondaryKeyField = IndexSecondaryKeyField(order=2)
-
-    model = AllOrdersConfiguredModel(player_id="abc", unit_class="foo", tier="bar")
-    assert model.tier.order == 1
-    assert model.unit_class.order == 2
+class MyDatabaseModel(DatabaseModel):
+    foo: str
+    nested: MyNestedDatabaseModel
 
 
-def test_same_order_defined_on_fields():
-    class SameOrderDefinedOnFields(DatabaseModel):
-        player_id: IndexPrimaryKeyField
-        tier: IndexSecondaryKeyField = IndexSecondaryKeyField(order=1)
-        unit_class: IndexSecondaryKeyField = IndexSecondaryKeyField(order=1)
+class MyDatabaseModelWithList(DatabaseModel):
+    foo: str
+    nested: list[MyNestedDatabaseModel]
 
-    with pytest.raises(ValidationError):
-        SameOrderDefinedOnFields(player_id="abc", unit_class="foo", tier="bar")
+
+class MySimpleDatabaseModel(DatabaseModel):
+    foo: str
+
+
+def test_model_hierarchy_is_correct():
+    my_doubly_nested_database_model = MyDoublyNestedDatabaseModel(baz="qux")
+    my_nested_database_model = MyNestedDatabaseModel(bar="baz", doubly_nested=my_doubly_nested_database_model)
+    my_database_model = MyDatabaseModel(foo="bar", nested=my_nested_database_model)
+    assert my_doubly_nested_database_model._parent == my_nested_database_model
+    assert my_nested_database_model._parent == my_database_model
+
+    assert not my_doubly_nested_database_model.was_modified
+    assert not my_nested_database_model.was_modified
+    assert not my_database_model.was_modified
+    my_nested_database_model.bar = "bazz"
+    assert not my_doubly_nested_database_model.was_modified
+    assert my_nested_database_model.was_modified
+    assert not my_database_model.was_modified
+    my_doubly_nested_database_model.baz = "quux"
+    assert my_doubly_nested_database_model.was_modified
+
+
+def test_model_hierarchy_is_correct_with_list():
+    my_doubly_nested_database_model = MyDoublyNestedDatabaseModel(baz="qux")
+    my_other_doubly_nested_database_model = MyDoublyNestedDatabaseModel(baz="qux")
+    my_nested_database_model = MyNestedDatabaseModel(bar="baz", doubly_nested=my_doubly_nested_database_model)
+    my_other_nested_database_model = MyNestedDatabaseModel(
+        bar="baz", doubly_nested=my_other_doubly_nested_database_model
+    )
+    my_database_model = MyDatabaseModelWithList(
+        foo="bar", nested=[my_nested_database_model, my_other_nested_database_model]
+    )
+    assert my_doubly_nested_database_model._parent == my_nested_database_model
+    assert my_nested_database_model._parent == my_database_model
+    assert my_other_nested_database_model._parent == my_database_model
+
+
+def test_models_in_hierarchy():
+    my_doubly_nested_database_model = MyDoublyNestedDatabaseModel(baz="qux")
+    my_nested_database_model = MyNestedDatabaseModel(bar="baz", doubly_nested=my_doubly_nested_database_model)
+    my_database_model = MyDatabaseModelWithList(foo="bar", nested=[my_nested_database_model])
+    assert my_database_model._model_types_in_hierarchy == {
+        "MyNestedDatabaseModel": MyNestedDatabaseModel,
+        "MyDoublyNestedDatabaseModel": MyDoublyNestedDatabaseModel,
+        "MyDatabaseModelWithList": MyDatabaseModelWithList,
+    }
+    assert my_database_model.split_to_simple_objects() == [
+        my_database_model,
+        my_nested_database_model,
+        my_doubly_nested_database_model,
+    ]
+
+
+def test_simple_model_hierarchy_returns_root():
+    my_database_model = MySimpleDatabaseModel(foo="bar")
+    assert my_database_model.split_to_simple_objects() == [my_database_model]

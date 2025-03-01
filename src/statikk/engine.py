@@ -13,22 +13,24 @@ from statikk.expressions import UpdateExpressionBuilder
 from statikk.models import (
     DatabaseModel,
     GSI,
-    Index,
-    IndexPrimaryKeyField,
-    IndexSecondaryKeyField,
     KeySchema,
 )
+from statikk.fields import FIELD_STATIKK_TYPE
 
-from aws_xray_sdk.core import xray_recorder
 from aws_xray_sdk.core import patch_all
 
 patch_all()
+
 
 class InvalidIndexNameError(Exception):
     pass
 
 
 class IncorrectSortKeyError(Exception):
+    pass
+
+
+class IncorrectHashKeyError(Exception):
     pass
 
 
@@ -56,8 +58,6 @@ class Table:
             for model in self.models:
                 self._set_index_fields(model, idx)
                 model.set_table_ref(self)
-                if "type" not in model.model_fields:
-                    model.model_fields["type"] = FieldInfo(annotation=str, default=model.model_type(), required=False)
         self._client = None
         self._dynamodb_table = None
 
@@ -160,6 +160,9 @@ class Table:
             BillingMode=self.billing_mode,
         )
 
+    def _get_model_type_by_statikk_type(self, statikk_type: str) -> Type[DatabaseModel]:
+        return [model_type for model_type in self.models if model_type.type() == statikk_type][0]
+
     def delete(self):
         """Deletes the DynamoDB table."""
         self._dynamodb_client().delete_table(TableName=self.name)
@@ -185,6 +188,8 @@ class Table:
             raise ItemNotFoundError(f"{model_class} with id '{id}' not found.")
         data = raw_data["Item"]
         for key, value in data.items():
+            if key == FIELD_STATIKK_TYPE:
+                continue
             data[key] = self._deserialize_value(value, model_class.model_fields[key])
         return model_class(**data)
 
@@ -196,7 +201,7 @@ class Table:
         key = {self.key_schema.hash_key: id}
         self._get_dynamodb_table().delete_item(Key=key)
 
-    def put_item(self, model: DatabaseModel) -> DatabaseModel:
+    def put_item(self, model: DatabaseModel):
         """
         Puts an item into the database.
 
@@ -207,7 +212,7 @@ class Table:
         always prefixed with the type of the model to avoid collisions between different model types.
 
         Example:
-            class Card(DatabaseModel):
+            class Card(DatabaseModelV2):
                 id: str
                 player_id: IndexPrimaryKeyField
                 type: IndexSecondaryKeyField
@@ -225,11 +230,9 @@ class Table:
 
         Returns the enriched database model instance.
         """
-        data = self._serialize_item(model)
-        self._get_dynamodb_table().put_item(Item=data)
-        for key, value in data.items():
-            data[key] = self._deserialize_value(value, model.model_fields[key])
-        return type(model)(**data)
+        with self.batch_write() as batch:
+            for item in model.split_to_simple_objects():
+                batch.put(item)
 
     def update_item(
         self,
@@ -252,11 +255,11 @@ class Table:
             for prefixed_attribute, value in expression_attribute_values.items():
                 expression_attribute_values[prefixed_attribute] = self._serialize_value(value)
                 attribute = prefixed_attribute.replace(":", "")
-                if model.model_fields[attribute].annotation is IndexSecondaryKeyField:
-                    idx_field = getattr(model, attribute)
-                    for idx in idx_field.index_names:
-                        idx_field.value = value
-                        changed_index_values.add(idx)
+                for index_name, index_fields in model.index_definitions().items():
+                    if attribute in index_fields.sk_fields:
+                        setattr(model, attribute, value)
+                        changed_index_values.add(index_name)
+
             return changed_index_values
 
         changed_index_values = _find_changed_indexes()
@@ -279,6 +282,8 @@ class Table:
         response = self._get_dynamodb_table().update_item(**request)
         data = response["Attributes"]
         for key, value in data.items():
+            if key == FIELD_STATIKK_TYPE:
+                continue
             data[key] = self._deserialize_value(value, model.model_fields[key])
         return type(model)(**data)
 
@@ -288,6 +293,39 @@ class Table:
         batch operation and the construction of index fields for each item.
         """
         return BatchWriteContext(self)
+
+    def _prepare_index_query_params(
+        self,
+        hash_key: Union[Condition | str],
+        model_class: Type[DatabaseModel],
+        range_key: Optional[Condition] = None,
+        filter_condition: Optional[ComparisonCondition] = None,
+        index_name: Optional[str] = None,
+    ):
+        if isinstance(hash_key, str):
+            hash_key = Equals(hash_key)
+        if not index_name:
+            index_name = self.indexes[0].name
+        index_filter = [idx for idx in self.indexes if idx.name == index_name]
+        if not index_filter:
+            raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
+        index = index_filter[0]
+        key_condition = hash_key.evaluate(index.hash_key.name)
+        if range_key is None and FIELD_STATIKK_TYPE not in model_class.index_definitions()[index_name].pk_fields:
+            range_key = BeginsWith(model_class.type())
+        if range_key:
+            if not model_class.is_nested():
+                range_key.enrich(model_class=model_class)
+            key_condition = key_condition & range_key.evaluate(index.sort_key.name)
+
+        query_params = {
+            "IndexName": index_name,
+            "KeyConditionExpression": key_condition,
+        }
+
+        if filter_condition:
+            query_params["FilterExpression"] = filter_condition
+        return query_params
 
     def query_index(
         self,
@@ -308,37 +346,46 @@ class Table:
         :param filter_condition: An optional filter condition to use for the query. See boto3.dynamodb.conditions.ComparisonCondition for more information.
         :param index_name: The name of the index to use for the query. If not provided, the first index configured on the table is used.
         """
-        if isinstance(hash_key, str):
-            hash_key = Equals(hash_key)
-        if not index_name:
-            index_name = self.indexes[0].name
-        index_filter = [idx for idx in self.indexes if idx.name == index_name]
-        if not index_filter:
-            raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
-        index = index_filter[0]
-        key_condition = hash_key.evaluate(index.hash_key.name)
-        if range_key is None and model_class.include_type_in_sort_key():
-            range_key = BeginsWith(model_class.model_type())
-        if range_key:
-            range_key.enrich(model_class=model_class)
-            key_condition = key_condition & range_key.evaluate(index.sort_key.name)
-
-        query_params = {
-            "IndexName": index_name,
-            "KeyConditionExpression": key_condition,
-        }
-        if filter_condition:
-            query_params["FilterExpression"] = filter_condition
+        query_params = self._prepare_index_query_params(
+            hash_key=hash_key,
+            model_class=model_class,
+            range_key=range_key,
+            filter_condition=filter_condition,
+            index_name=index_name,
+        )
         last_evaluated_key = True
-
         while last_evaluated_key:
             items = self._get_dynamodb_table().query(**query_params)
-            yield from [self._deserialize_item(item, model_class=model_class) for item in items["Items"]]
+            yield from [model_class(**item) for item in items["Items"]]
             last_evaluated_key = items.get("LastEvaluatedKey", False)
+
+    def query_hierarchy(
+        self,
+        hash_key: Union[Condition | str],
+        model_class: Type[DatabaseModel],
+        range_key: Optional[Condition] = None,
+        filter_condition: Optional[ComparisonCondition] = None,
+        index_name: Optional[str] = None,
+    ):
+        query_params = self._prepare_index_query_params(
+            hash_key=hash_key,
+            model_class=model_class,
+            range_key=range_key,
+            filter_condition=filter_condition,
+            index_name=index_name,
+        )
+        hierarchy_items = []
+        last_evaluated_key = True
+        while last_evaluated_key:
+            items = self._get_dynamodb_table().query(**query_params)
+            hierarchy_items.extend(
+                [self._get_model_type_by_statikk_type(item[FIELD_STATIKK_TYPE])(**item) for item in items["Items"]]
+            )
+            last_evaluated_key = items.get("LastEvaluatedKey", False)
+        return self.reconstruct_hierarchy(hierarchy_items)
 
     def scan(
         self,
-        model_class: Type[DatabaseModel],
         filter_condition: Optional[ComparisonCondition] = None,
         consistent_read: bool = False,
     ):
@@ -358,7 +405,7 @@ class Table:
 
         while last_evaluated_key:
             items = self._get_dynamodb_table().scan(**query_params)
-            yield from [model_class(**item) for item in items["Items"]]
+            yield from [self._get_model_type_by_statikk_type(item["__statikk_type"])(**item) for item in items["Items"]]
             last_evaluated_key = items.get("LastEvaluatedKey", False)
 
     def _convert_dynamodb_to_python(self, item) -> Dict[str, Any]:
@@ -400,9 +447,9 @@ class Table:
     def _prepare_model_data(
         self,
         item: DatabaseModel,
-        indexes: List[Index],
+        indexes: List[GSI],
         force_override_index_fields: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> DatabaseModel:
         for idx in indexes:
             index_fields = self._compose_index_values(item, idx)
             for key, value in index_fields.items():
@@ -411,16 +458,20 @@ class Table:
                 if value is not None:
                     setattr(item, key, value)
         item.model_rebuild(force=True)
-        return item.model_dump()
+        return item
 
     def _serialize_item(self, item: DatabaseModel):
-        data = self._prepare_model_data(item, self.indexes)
+        data = item.model_dump()
         for key, value in data.items():
+            if issubclass(value.__class__, DatabaseModel) and value.is_nested():
+                continue
             data[key] = self._serialize_value(value)
         return data
 
     def _deserialize_item(self, item: Dict[str, Any], model_class: Type[DatabaseModel]):
         for key, value in item.items():
+            if key == FIELD_STATIKK_TYPE:
+                continue
             item[key] = self._deserialize_value(value, model_class.model_fields[key])
         return model_class(**item)
 
@@ -442,32 +493,20 @@ class Table:
             return {key: self._serialize_value(item) for key, item in value.items() if item is not None}
         return value
 
-    def _set_index_fields(self, model: DatabaseModel | Type[DatabaseModel], idx: GSI):
+    def _set_index_fields(self, model: Type[DatabaseModel], idx: GSI):
         model_fields = model.model_fields
-        if idx.hash_key.name not in model_fields:
+        if idx.hash_key.name not in model_fields.keys():
             model_fields[idx.hash_key.name] = FieldInfo(annotation=idx.hash_key.type, default=None, required=False)
-        if idx.sort_key.name not in model_fields:
+        if idx.sort_key.name not in model_fields.keys():
             model_fields[idx.sort_key.name] = FieldInfo(annotation=idx.sort_key.type, default=None, required=False)
 
     def _get_sort_key_value(self, model: DatabaseModel, idx: GSI) -> str:
-        sort_key_fields_unordered = [
-            (field_name, getattr(model, field_name).order)
-            for field_name, field_info in model.model_fields.items()
-            if field_info.annotation is not None
-            if field_info.annotation is IndexSecondaryKeyField and idx.name in getattr(model, field_name).index_names
-        ]
-
-        if len(sort_key_fields_unordered) == idx.sort_key is not None:
+        sort_key_fields = model.index_definitions().get(idx.name, []).sk_fields
+        if len(sort_key_fields) == 0:
             raise IncorrectSortKeyError(f"Model {model.__class__} does not have a sort key defined.")
-        if sort_key_fields_unordered[0][1] is not None:
-            sort_key_fields_unordered.sort(key=lambda x: x[1])
 
-        sort_key_fields = [field[0] for field in sort_key_fields_unordered]
-
-        if len(sort_key_fields) == 0 and model.include_type_in_sort_key():
-            return model.model_type()
         if idx.sort_key.type is not str:
-            value = getattr(model, sort_key_fields[0]).value
+            value = getattr(model, sort_key_fields[0])
             if type(value) is not idx.sort_key.type:
                 raise IncorrectSortKeyError(
                     f"Incorrect sort key type. Sort key type for sort key '{idx.sort_key.name}' should be: "
@@ -478,32 +517,28 @@ class Table:
             value = value or idx.sort_key.default
             return self._serialize_value(value)
 
-        sort_key_values: List[str] = []
-        if model.include_type_in_sort_key() and model.model_type() not in sort_key_values:
-            sort_key_values.append(model.model_type())
+        sort_key_values = []
+        if model._parent:
+            sort_key_values.append(getattr(model._parent, idx.sort_key.name))
+        if FIELD_STATIKK_TYPE not in model.index_definitions()[idx.name].pk_fields:
+            sort_key_values.append(model.type())
+        for sort_key_field in sort_key_fields:
+            if sort_key_field in model.model_fields.keys():
+                sort_key_values.append(getattr(model, sort_key_field))
 
-        for field in sort_key_fields:
-            value = getattr(model, field).value
-            sort_key_values.append(value)
         return self.delimiter.join(sort_key_values)
 
     def _compose_index_values(self, model: DatabaseModel, idx: GSI) -> Dict[str, Any]:
-        model_fields = model.model_fields
-        hash_key_field = [
-            field_name
-            for field_name, field_info in model_fields.items()
-            if field_info.annotation is not None
-            if field_info.annotation is IndexPrimaryKeyField and idx.name in getattr(model, field_name).index_names
-        ]
-        if len(hash_key_field) == 0 and model.type_is_primary_key():
-            hash_key_field.append(model.model_type())
-        hash_key_field = hash_key_field[0]
+        hash_key_fields = model.index_definitions().get(idx.name, []).pk_fields
+
+        if len(hash_key_fields) == 0 and not model.is_nested():
+            raise IncorrectHashKeyError(f"Model {model.__class__} does not have a hash key defined.")
 
         def _get_hash_key_value():
-            if hash_key_field == model.model_type():
-                return model.model_type()
-            else:
-                return getattr(model, hash_key_field).value
+            if model._parent:
+                return getattr(model._parent, idx.hash_key.name)
+
+            return self.delimiter.join([self._serialize_value(model.get_attribute(field)) for field in hash_key_fields])
 
         return {
             idx.hash_key.name: _get_hash_key_value(),
@@ -519,14 +554,132 @@ class Table:
         if len(put_items) > 0:
             with dynamodb_table.batch_writer() as batch:
                 for item in put_items:
-                    data = self._serialize_item(item)
+                    enriched_item = self._prepare_model_data(item, self.indexes)
+                    if not enriched_item.was_modified:
+                        continue
+                    data = self._serialize_item(enriched_item)
                     batch.put_item(Item=data)
 
         if len(delete_items) > 0:
             with dynamodb_table.batch_writer() as batch:
                 for item in delete_items:
-                    data = self._serialize_item(item)
+                    enriched_item = self._prepare_model_data(item, self.indexes)
+                    data = self._serialize_item(enriched_item)
                     batch.delete_item(Key=data)
+
+    def reconstruct_hierarchy(self, models: list[DatabaseModel]) -> Optional[DatabaseModel]:
+        """
+        Reconstructs a hierarchical model structure from a flat list of models.
+
+        This function identifies the top-level model and reconstructs the hierarchy
+        by setting references between parent and child models.
+
+        Args:
+            models: A flat list of DatabaseModel instances to reconstruct
+
+        Returns:
+            The top-level model with its hierarchy fully reconstructed, or None if the list is empty
+        """
+        if not models:
+            return None
+
+        # Create a map of model IDs to models for quick lookup
+        models_by_id = {model.id: model for model in models}
+
+        # Find potential child references within each model
+        child_models = set()
+
+        for model in models:
+            for field_name, field_value in model:
+                if field_name.startswith("_"):
+                    continue
+
+                # Direct reference to another model
+                if (
+                    hasattr(field_value, "__class__")
+                    and issubclass(field_value.__class__, DatabaseModel)
+                    and field_value.id in models_by_id
+                ):
+                    # Mark this as a child
+                    child_models.add(field_value.id)
+
+                    # Replace reference with the actual model from our list
+                    setattr(model, field_name, models_by_id[field_value.id])
+
+                # List containing models
+                elif isinstance(field_value, list):
+                    for i, item in enumerate(field_value):
+                        if (
+                            hasattr(item, "__class__")
+                            and issubclass(item.__class__, DatabaseModel)
+                            and item.id in models_by_id
+                        ):
+                            # Mark this as a child
+                            child_models.add(item.id)
+
+                            # Replace reference with the actual model from our list
+                            field_value[i] = models_by_id[item.id]
+
+                # Set containing models
+                elif isinstance(field_value, set):
+                    new_set = set()
+                    for item in field_value:
+                        if (
+                            hasattr(item, "__class__")
+                            and issubclass(item.__class__, DatabaseModel)
+                            and item.id in models_by_id
+                        ):
+                            # Mark this as a child
+                            child_models.add(item.id)
+
+                            # Add the actual model from our list
+                            new_set.add(models_by_id[item.id])
+                        else:
+                            new_set.add(item)
+
+                    # Replace the set with our updated one
+                    setattr(model, field_name, new_set)
+
+                # Dictionary with model keys or values
+                elif isinstance(field_value, dict):
+                    new_dict = {}
+                    for key, value in field_value.items():
+                        new_key = key
+                        new_value = value
+
+                        # Check if key is a model
+                        if (
+                            hasattr(key, "__class__")
+                            and issubclass(key.__class__, DatabaseModel)
+                            and key.id in models_by_id
+                        ):
+                            # Mark this as a child
+                            child_models.add(key.id)
+                            new_key = models_by_id[key.id]
+
+                        # Check if value is a model
+                        if (
+                            hasattr(value, "__class__")
+                            and issubclass(value.__class__, DatabaseModel)
+                            and value.id in models_by_id
+                        ):
+                            # Mark this as a child
+                            child_models.add(value.id)
+                            new_value = models_by_id[value.id]
+
+                        new_dict[new_key] = new_value
+
+                    # Replace the dict with our updated one
+                    setattr(model, field_name, new_dict)
+
+        # Find the root model (the one that's not a child of any other model)
+        root_models = [model for model in models if model.id not in child_models]
+
+        # There should be exactly one root
+        if len(root_models) != 1:
+            raise ValueError(f"Expected 1 root model, found {len(root_models)}")
+
+        return root_models[0]
 
 
 class BatchWriteContext:
