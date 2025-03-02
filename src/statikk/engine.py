@@ -689,11 +689,6 @@ class Table:
                     if args and args[0] == child_model_class:
                         matching_fields.append((field_name, "set"))
 
-                elif hasattr(field_type, "__origin__") and field_type.__origin__ == dict:
-                    args = getattr(field_type, "__args__", [])
-                    if len(args) >= 2 and args[1] == child_model_class:
-                        matching_fields.append((field_name, "dict_values"))
-
             if matching_fields:
                 for field_name, container_type in matching_fields:
                     if container_type == "list":
@@ -732,34 +727,6 @@ class Table:
 
                             result[field_name].append(reconstructed_child)
                             existing_ids.add(child["id"])
-
-                    elif container_type == "dict_values":
-                        if field_name not in result:
-                            result[field_name] = {}
-
-                        for child in child_items:
-                            key_field = None
-                            if "key" in child:
-                                key_field = "key"
-                            else:
-                                for field in child.keys():
-                                    if field not in {
-                                        "id",
-                                        FIELD_STATIKK_TYPE,
-                                        FIELD_STATIKK_PARENT_ID,
-                                        "gsi_pk",
-                                        "gsi_sk",
-                                    }:
-                                        key_field = field
-                                        break
-
-                            if key_field:
-                                key = child[key_field]
-                                reconstructed_child = self._reconstruct_item_with_children(
-                                    child, items_by_id, children_by_parent_id, processed_items
-                                )
-
-                                result[field_name][key] = reconstructed_child
 
                     elif container_type == "single":
                         if child_items:
