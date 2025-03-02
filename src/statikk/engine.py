@@ -548,7 +548,7 @@ class Table:
             sort_key_values.append(model.type())
         for sort_key_field in sort_key_fields:
             if sort_key_field in model.model_fields.keys():
-                sort_key_values.append(getattr(model, sort_key_field))
+                sort_key_values.append(self._serialize_value(getattr(model, sort_key_field)))
 
         return self.delimiter.join(sort_key_values)
 

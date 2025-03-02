@@ -1,4 +1,10 @@
+from pydantic import BaseModel
 from statikk.models import DatabaseModel
+
+
+class SimpleObject(BaseModel):
+    foo: str
+    bar: str
 
 
 class MyDoublyNestedDatabaseModel(DatabaseModel):
@@ -30,6 +36,7 @@ class MyDatabaseModelWithList(DatabaseModel):
 
 class MySimpleDatabaseModel(DatabaseModel):
     foo: str
+    simple_object: SimpleObject
 
 
 def test_model_hierarchy_is_correct():
@@ -82,5 +89,5 @@ def test_models_in_hierarchy():
 
 
 def test_simple_model_hierarchy_returns_root():
-    my_database_model = MySimpleDatabaseModel(foo="bar")
+    my_database_model = MySimpleDatabaseModel(foo="bar", simple_object=SimpleObject(foo="foo", bar="bar"))
     assert my_database_model.split_to_simple_objects() == [my_database_model]
