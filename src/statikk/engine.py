@@ -193,13 +193,14 @@ class Table:
             data[key] = self._deserialize_value(value, model_class.model_fields[key])
         return model_class(**data)
 
-    def delete_item(self, id: str):
+    def delete_item(self, model: DatabaseModel):
         """
         Deletes an item from the database by id, using the partition key of the table.
         :param id: The id of the item to delete.
         """
-        key = {self.key_schema.hash_key: id}
-        self._get_dynamodb_table().delete_item(Key=key)
+        with self.batch_write() as batch:
+            for item in model.split_to_simple_objects():
+                batch.delete(item)
 
     def put_item(self, model: DatabaseModel):
         """
@@ -366,7 +367,7 @@ class Table:
         range_key: Optional[Condition] = None,
         filter_condition: Optional[ComparisonCondition] = None,
         index_name: Optional[str] = None,
-    ):
+    ) -> Optional[DatabaseModel]:
         query_params = self._prepare_index_query_params(
             hash_key=hash_key,
             model_class=model_class,

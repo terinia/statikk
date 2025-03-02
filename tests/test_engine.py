@@ -550,7 +550,7 @@ def test_delete_model():
     )
     table.put_item(model)
     table.put_item(model_2)
-    table.delete_item(model.id)
+    table.delete_item(model)
     model_3.delete()
     assert list(table.query_index("123", MyAwesomeModel)) == [model_2]
 
@@ -849,3 +849,5 @@ def test_nested_hierarchies():
     assert hierarchy.nested.doubly_nested[0].gsi_pk == "foo_id"
     assert hierarchy.nested.doubly_nested[0].gsi_sk == "ModelHierarchy|state|NestedModel|foo|DoublyNestedModel|bar"
     assert hierarchy.nested.doubly_nested[0].items[0].gsi_pk == "foo_id"
+    hierarchy.delete()
+    assert list(table.scan()) == []

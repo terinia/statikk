@@ -191,7 +191,7 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         return self._table.put_item(self)
 
     def delete(self):
-        return self._table.delete_item(self.id)
+        return self._table.delete_item(self)
 
     def update(self, sort_key: Optional[str] = None) -> DatabaseModelUpdateExpressionBuilder:
         return DatabaseModelUpdateExpressionBuilder(self, sort_key)
@@ -220,6 +220,8 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         return cls._table.batch_get_items(ids=ids, model_class=cls, batch_size=batch_size)
 
     def should_write_to_database(self) -> bool:
+        if self.is_nested():
+            return self._parent.should_write_to_database()
         return True
 
     @classmethod
