@@ -8,6 +8,7 @@ from pydantic.fields import FieldInfo
 from boto3.dynamodb.conditions import ComparisonCondition, Key
 from boto3.dynamodb.types import TypeDeserializer, Decimal
 
+from statikk.typing import T
 from statikk.conditions import Condition, Equals, BeginsWith
 from statikk.expressions import UpdateExpressionBuilder
 from statikk.models import (
@@ -170,10 +171,10 @@ class Table:
     def get_item(
         self,
         id: str,
-        model_class: Type[DatabaseModel],
+        model_class: Type[T],
         sort_key: Optional[Any] = None,
         consistent_read: bool = False,
-    ):
+    ) -> T:
         """
         Returns an item from the database by id, using the partition key of the table.
         :param id: The id of the item to retrieve.
@@ -331,11 +332,11 @@ class Table:
     def query_index(
         self,
         hash_key: Union[Condition | str],
-        model_class: Type[DatabaseModel],
+        model_class: Type[T],
         range_key: Optional[Condition] = None,
         filter_condition: Optional[ComparisonCondition] = None,
         index_name: Optional[str] = None,
-    ):
+    ) -> list[T]:
         """
         Queries the database using the provided hash key and range key conditions. A filter condition can also be provided
         using the filter_condition parameter. The method returns a list of items matching the query, deserialized into the
@@ -397,7 +398,7 @@ class Table:
         self,
         filter_condition: Optional[ComparisonCondition] = None,
         consistent_read: bool = False,
-    ):
+    ) -> list[DatabaseModel]:
         """
         Scans the database for items matching the provided filter condition. The method returns a list of items matching
         the query, deserialized into the provided model_class parameter.
@@ -421,9 +422,7 @@ class Table:
         deserializer = TypeDeserializer()
         return {k: deserializer.deserialize(v) for k, v in item.items()}
 
-    def batch_get_items(
-        self, ids: List[str], model_class: Type[DatabaseModel], batch_size: int = 100
-    ) -> List[DatabaseModel]:
+    def batch_get_items(self, ids: List[str], model_class: Type[T], batch_size: int = 100) -> list[T]:
         dynamodb = self._dynamodb_client()
 
         id_batches = [ids[i : i + batch_size] for i in range(0, len(ids), batch_size)]

@@ -4,6 +4,7 @@ import typing
 import logging
 from uuid import uuid4
 from typing import Optional, List, Any, Set, Type
+from statikk.typing import T
 
 from boto3.dynamodb.conditions import ComparisonCondition
 from pydantic import BaseModel, model_serializer, model_validator, Field, Extra
@@ -54,6 +55,10 @@ class IndexFieldConfig(BaseModel):
 
 class TrackingMixin:
     _original_hash: int = Field(exclude=True)
+
+    @classmethod
+    def should_track(cls) -> bool:
+        return True
 
     def __init__(self):
         self._original_hash = self._recursive_hash()
@@ -126,7 +131,10 @@ class TrackingMixin:
 
     @property
     def was_modified(self) -> bool:
-        return self._recursive_hash() != self._original_hash
+        if self.should_track():
+            return self._recursive_hash() != self._original_hash
+
+        return True
 
 
 class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
@@ -160,12 +168,12 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
 
     @classmethod
     def query(
-        cls,
+        cls: Type[T],
         hash_key: Condition,
         range_key: Optional[Condition] = None,
         filter_condition: Optional[ComparisonCondition] = None,
         index_name: Optional[str] = None,
-    ):
+    ) -> T:
         return cls._table.query_index(
             hash_key=hash_key,
             model_class=cls,
@@ -176,12 +184,12 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
 
     @classmethod
     def query_hierarchy(
-        cls,
+        cls: Type[T],
         hash_key: Union[Condition | str],
         range_key: Optional[Condition] = None,
         filter_condition: Optional[ComparisonCondition] = None,
         index_name: Optional[str] = None,
-    ) -> DatabaseModel:
+    ) -> T:
         return cls._table.query_hierarchy(
             hash_key=hash_key,
             model_class=cls,
@@ -215,11 +223,11 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         )
 
     @classmethod
-    def get(cls, id: str, sort_key: Optional[str] = None, consistent_read: bool = False):
+    def get(cls: Type[T], id: str, sort_key: Optional[str] = None, consistent_read: bool = False) -> T:
         return cls._table.get_item(id=id, model_class=cls, sort_key=sort_key, consistent_read=consistent_read)
 
     @classmethod
-    def batch_get(cls, ids: List[str], batch_size: int = 100):
+    def batch_get(cls: Type[T], ids: List[str], batch_size: int = 100) -> list[T]:
         return cls._table.batch_get_items(ids=ids, model_class=cls, batch_size=batch_size)
 
     def should_write_to_database(self) -> bool:
@@ -232,7 +240,7 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         cls,
         filter_condition: Optional[ComparisonCondition] = None,
         consistent_read: bool = False,
-    ):
+    ) -> list[DatabaseModel]:
         return cls._table.scan(filter_condition=filter_condition)
 
     @model_serializer(mode="wrap")
