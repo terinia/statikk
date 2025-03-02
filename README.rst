@@ -28,14 +28,18 @@ Basic Usage
 
 .. code-block:: python
 
-    from statikk.models import DatabaseModel, Table, GlobalSecondaryIndex, KeySchema, IndexPrimaryKeyField, IndexSecondaryKeyField
+    from statikk.models import DatabaseModel, Table, GlobalSecondaryIndex, KeySchema
 
     class MyAwesomeModel(DatabaseModel):
-      player_id: IndexPrimaryKeyField
-      tier: IndexSecondaryKeyField
+      player_id: str
+      tier: str
       name: str = "Foo"
       values: set = {1, 2, 3, 4}
       cost: int = 4
+
+      @classmethod
+      def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+        return {"main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["tier"])}
 
     table = Table(
       name="my-dynamodb-table",
