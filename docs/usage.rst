@@ -50,21 +50,14 @@ Model definition
 
   class Player(DatabaseModel):
     # we don't define an id field, so a uuid will be automatically assigned to the model when it's created
-    last_login_date: IndexSecondaryKeyField
+    last_login_date: datetime
 
     @classmethod
-    def type_is_primary_key(cls):
-        # Makes the model's type the primary key. The model's type is the class name
-        return True
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+        return {"main-index": IndexFieldConfig(pk_fields=["type"], sk_fields=["last_login_date"])}
 
     @classmethod
-    def include_type_in_sort_key(cls):
-        # By default, the model's type is alawys included in the sort key. This is useful to avoid collisions of similar
-        # models that share the same primary key. Here however, we want the type to be the primary key only.
-        return False
-
-    @classmethod
-    def model_type(cls):
+    def type(cls):
       # The default return value for this method is the name of the class, but feel free to override it here to whatever
       # you'd like present in the sort key.
       return "Player"
@@ -72,10 +65,14 @@ Model definition
 
   class Card(DatabaseModel):
     id: str
-    player_id: IndexPrimaryKeyField
-    tier: IndexSecondaryKeyField
+    player_id: str
+    tier: str
     values: list[int]
     cost: int
+
+    @classmethod
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+      return {"main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["tier"])}
 
 The above setup allows us to query the table in the following ways:
  - Get all players
@@ -168,9 +165,13 @@ Let's take a look at an example:
 
     class MultiKeyCard(DatabaseModel):
       id: str
-      player_id: IndexPrimaryKeyField
-      origin: IndexSecondaryKeyField
-      tier: IndexSecondaryKeyField
+      player_id: str
+      origin: str
+      tier: str
+
+      @classmethod
+      def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+        return {"main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["origin", "tier"])}
 
 This setup allows you to search using the following patterns:
  - Get all cards belonging to a player
@@ -180,15 +181,6 @@ This setup allows you to search using the following patterns:
 Note that the order is **REALLY** important here. Swapping up the order in on your production data will cause absolute havoc on your queries
 and will taint your data.
 
-It is **HIGHLY RECOMMENDED** to manually define the order property on your secondary index fields.
-
-.. code-block:: python
-
-    class MultiKeyCard(DatabaseModel):
-      id: str
-      player_id: IndexPrimaryKeyField
-      origin: IndexSecondaryKeyField(order=1)
-      tier: IndexSecondaryKeyField(order=2)
 
 ====================
 Multiple indexes
@@ -199,10 +191,17 @@ Statikk also supports multiple indexes. This is useful if you want to query your
 .. code-block:: python
 
   class MultiIndexModel(DatabaseModel):
-    player_id: IndexPrimaryKeyField
-    tier: IndexSecondaryKeyField
-    origin: IndexPrimaryKeyField = IndexPrimaryKeyField(index_names=["secondary-index"])
-    unit_class: IndexSecondaryKeyField = IndexSecondaryKeyField(index_names=["main-index", "secondary-index"])
+    player_id: str
+    tier: str
+    origin: str
+    unit_class: str
+
+    @classmethod
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+      return {
+        "main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["tier", "unit_class"]),
+        "secondary-index": IndexFieldConfig(pk_fields=["origin"], sk_fields=["unit_class"]),
+      }
 
 This setup requires the table to have two indexes defined: main-index and secondary index. Notice that the ``unit_class`` field
 is actually part of both the main and the secondary index. So when Statikk constructs the index values for this model, it will include
@@ -231,8 +230,12 @@ For example:
 .. code-block:: python
 
     class Card(DatabaseModel):
-        player_id: IndexPrimaryKeyField
-        cost: IndexSecondaryKeyField(type=int)
+        player_id: str
+        cost: int
+
+    @classmethod
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+      return {"main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["cost"])}
 
     def query_data():
        models = list(Card.query(hash_key=Equals(player.id), range_key=GreaterThan(4), filter_condition=Attr("type").gte("Card")))
@@ -287,11 +290,15 @@ Let's take a look at an example:
 .. code-block:: python
 
   class Card(DatabaseModel):
-    player_id: IndexPrimaryKeyField
-    tier: IndexSecondaryKeyField
+    player_id: str
+    tier: str
     values: set[int]
     cost: int
     name: str = "Foo"
+
+    @classmethod
+    def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+      return {"main-index": IndexFieldConfig(pk_fields=["player_id"], sk_fields=["tier"])}
 
   card = Card(player_id=player.id, tier="EPIC", values={1, 2, 3, 4}, cost=5, name="FooFoo")
   card.save()
