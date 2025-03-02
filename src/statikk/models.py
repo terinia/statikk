@@ -99,7 +99,9 @@ class TrackingMixin:
                 if contains_model:
                     continue
 
-            values.append(self._make_hashable(value))
+            hashed_value = self._make_hashable(value)
+            if hashed_value is not None:
+                values.append(hashed_value)
 
         return hash(tuple(values))
 
@@ -110,15 +112,16 @@ class TrackingMixin:
             return tuple(self._make_hashable(item) for item in value)
         elif isinstance(value, dict):
             return tuple((self._make_hashable(k), self._make_hashable(v)) for k, v in sorted(value.items()))
-        elif isinstance(value, BaseModel):
-            return value._recursive_hash() if hasattr(value, "_recursive_hash") else hash(value)
+        elif isinstance(value, BaseModel) and hasattr(value, "_recursive_hash"):
+            return value._recursive_hash()
         else:
             try:
                 return hash(value)
-            except Exception:
+            except TypeError:
                 logger.warning(
                     f"{type(value)} is unhashable, tracking will not work. Consider implementing the TrackingMixin for this type."
                 )
+                return None
         return value
 
     @property
