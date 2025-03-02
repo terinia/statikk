@@ -91,3 +91,18 @@ def test_models_in_hierarchy():
 def test_simple_model_hierarchy_returns_root():
     my_database_model = MySimpleDatabaseModel(foo="bar", simple_object=SimpleObject(foo="foo", bar="bar"))
     assert my_database_model.split_to_simple_objects() == [my_database_model]
+
+
+def test_tracking_disabled():
+    class MyDatabaseModel(DatabaseModel):
+        foo: str = "foo"
+        bar: str = "bar"
+
+        @classmethod
+        def should_track(cls) -> bool:
+            return False
+
+    my_database_model = MyDatabaseModel(foo="foo", bar="bar")
+    assert my_database_model.was_modified is True  # untracked models should always be marked as modified
+    my_database_model.foo = "bar"
+    assert my_database_model.was_modified is True

@@ -289,7 +289,7 @@ def test_query_model_index():
     table.put_item(model)
     model_2 = MyAwesomeModel(id="foo-2", player_id="123", tier="EPIC")
     table.put_item(model_2)
-    models = list(
+    models: list[MyAwesomeModel] = list(
         table.query_index(
             hash_key=Equals("123"),
             range_key=BeginsWith("LEG"),
