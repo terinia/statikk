@@ -72,6 +72,9 @@ class TrackingMixin:
         Returns:
             A hash value representing the model's non-model fields.
         """
+        if not self.should_track():
+            return 0
+
         values = []
         for field_name in self.model_fields:
             if not hasattr(self, field_name):
