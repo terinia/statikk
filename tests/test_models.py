@@ -28,6 +28,10 @@ class MyDatabaseModel(DatabaseModel):
     foo: str
     nested: MyNestedDatabaseModel
 
+    @property
+    def should_track(self) -> bool:
+        return True
+
 
 class MyDatabaseModelWithList(DatabaseModel):
     foo: str
@@ -97,10 +101,6 @@ def test_tracking_disabled():
     class MyDatabaseModel(DatabaseModel):
         foo: str = "foo"
         bar: str = "bar"
-
-        @classmethod
-        def should_track(cls) -> bool:
-            return False
 
     my_database_model = MyDatabaseModel(foo="foo", bar="bar")
     assert my_database_model.was_modified is True  # untracked models should always be marked as modified

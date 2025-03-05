@@ -56,11 +56,13 @@ class IndexFieldConfig(BaseModel):
 class TrackingMixin:
     _original_hash: int = Field(exclude=True)
 
-    @classmethod
-    def should_track(cls) -> bool:
-        return True
+    @property
+    def should_track(self) -> bool:
+        if self._parent is not None:
+            return self._parent.should_track
+        return False
 
-    def __init__(self):
+    def init_tracking(self):
         self._original_hash = self._recursive_hash()
 
     def _recursive_hash(self) -> int:
@@ -72,7 +74,7 @@ class TrackingMixin:
         Returns:
             A hash value representing the model's non-model fields.
         """
-        if not self.should_track():
+        if not self.should_track:
             return 0
 
         values = []
@@ -134,7 +136,7 @@ class TrackingMixin:
 
     @property
     def was_modified(self) -> bool:
-        if self.should_track():
+        if self.should_track:
             return self._recursive_hash() != self._original_hash
 
         return True
@@ -256,10 +258,10 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
 
     @model_validator(mode="after")
     def initialize_tracking(self):
-        self._original_hash = self._recursive_hash()
         self._model_types_in_hierarchy[self.type()] = type(self)
         if not self.is_nested():
             self._set_parent_references(self)
+        self.init_tracking()
 
         return self
 
@@ -354,6 +356,7 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         field._parent = parent
         root._model_types_in_hierarchy[field.type()] = type(field)
         field._set_parent_references(root)
+        field.init_tracking()
 
     def _set_parent_references(self, root: DatabaseModel):
         for field_name, field_value in self:
