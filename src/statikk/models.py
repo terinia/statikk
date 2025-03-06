@@ -178,7 +178,7 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         range_key: Optional[Condition] = None,
         filter_condition: Optional[ComparisonCondition] = None,
         index_name: Optional[str] = None,
-    ) -> T:
+    ) -> list[T]:
         return cls._table.query_index(
             hash_key=hash_key,
             model_class=cls,
