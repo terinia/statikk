@@ -313,7 +313,9 @@ class Table:
             raise InvalidIndexNameError(f"The provided index name '{index_name}' is not configured on the table.")
         index = index_filter[0]
         key_condition = hash_key.evaluate(index.hash_key.name)
-        if range_key is None and FIELD_STATIKK_TYPE not in model_class.index_definitions()[index_name].pk_fields:
+        if (
+            not range_key or (range_key and range_key.value != model_class.type())
+        ) and FIELD_STATIKK_TYPE not in model_class.index_definitions()[index_name].pk_fields:
             range_key = BeginsWith(model_class.type())
         if range_key:
             if not model_class.is_nested():

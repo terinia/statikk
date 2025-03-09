@@ -13,6 +13,7 @@ from statikk.engine import (
     InvalidIndexNameError,
     ItemNotFoundError,
 )
+from statikk.fields import FIELD_STATIKK_TYPE
 from statikk.models import (
     DatabaseModel,
     KeySchema,
@@ -670,13 +671,13 @@ def test_query_no_range_key_provided():
     mock_dynamodb().stop()
 
 
-def test_query_no_range_is_provided_but_model_does_not_include_type_in_range_key():
+def test_query_hash_key_is_type():
     class Model(DatabaseModel):
         tier: str
 
         @classmethod
         def index_definitions(cls) -> dict[str, IndexFieldConfig]:
-            return {"main-index": IndexFieldConfig(pk_fields=["__statikk_type"], sk_fields=["tier"])}
+            return {"main-index": IndexFieldConfig(pk_fields=[FIELD_STATIKK_TYPE], sk_fields=["tier"])}
 
     mock_dynamodb().start()
     table = Table(
