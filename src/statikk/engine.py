@@ -232,9 +232,13 @@ class Table:
 
         Returns the enriched database model instance.
         """
+
         with self.batch_write() as batch:
             for item in model.split_to_simple_objects():
-                batch.put(item)
+                if item._should_delete:
+                    batch.delete(item)
+                else:
+                    batch.put(item)
 
     def update_item(
         self,

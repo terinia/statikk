@@ -162,6 +162,7 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
     id: str = Field(default_factory=lambda: str(uuid4()))
     _parent: Optional[DatabaseModel] = None
     _model_types_in_hierarchy: dict[str, Type[DatabaseModel]] = {}
+    _should_delete: bool = False
 
     @classmethod
     def type(cls) -> str:
@@ -255,6 +256,9 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         if self.is_nested():
             return self._parent.should_write_to_database()
         return True
+
+    def mark_for_delete(self):
+        self._should_delete = True
 
     @classmethod
     def scan(

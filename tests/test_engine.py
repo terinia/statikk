@@ -788,7 +788,7 @@ def test_nested_hierarchies():
 
     class DoublyNestedModel(DatabaseModel):
         bar: str
-        items: list[TriplyNested]
+        items: list[TriplyNested] = []
 
         @classmethod
         def index_definitions(cls) -> dict[str, IndexFieldConfig]:
@@ -803,7 +803,7 @@ def test_nested_hierarchies():
 
     class NestedModel(DatabaseModel):
         foo: str
-        doubly_nested: list[DoublyNestedModel]
+        doubly_nested: list[DoublyNestedModel] = []
 
         @classmethod
         def index_definitions(cls) -> dict[str, IndexFieldConfig]:
@@ -836,7 +836,8 @@ def test_nested_hierarchies():
         models=[ModelHierarchy, NestedModel, DoublyNestedModel, TriplyNested],
     )
     _create_dynamodb_table(table)
-    doubly_nested = DoublyNestedModel(bar="bar", items=[TriplyNested(faz="faz")])
+    triple_nested_model = TriplyNested(faz="faz")
+    doubly_nested = DoublyNestedModel(bar="bar", items=[triple_nested_model])
     double_nested_no_write = DoublyNestedModel(bar="far", items=[TriplyNested(faz="faz")])
     nested = NestedModel(foo="foo", doubly_nested=[doubly_nested, double_nested_no_write])
     model_hierarchy = ModelHierarchy(foo_id="foo_id", state="state", nested=nested)
@@ -850,5 +851,9 @@ def test_nested_hierarchies():
     assert hierarchy.nested.doubly_nested[0].gsi_pk == "foo_id"
     assert hierarchy.nested.doubly_nested[0].gsi_sk == "ModelHierarchy|state|NestedModel|foo|DoublyNestedModel|bar"
     assert hierarchy.nested.doubly_nested[0].items[0].gsi_pk == "foo_id"
+    hierarchy.nested.doubly_nested[0].items[0].mark_for_delete()
+    hierarchy.save()
+    hierarchy = ModelHierarchy.query_hierarchy(hash_key=Equals("foo_id"))
+    assert len(hierarchy.nested.doubly_nested[0].items) == 0
     hierarchy.delete()
     assert list(table.scan()) == []
