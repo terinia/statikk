@@ -67,15 +67,17 @@ class TrackingMixin:
 
     def _recursive_hash(self) -> int:
         """
-        Compute a hash value for the model, ignoring nested DatabaseModel instances.
+        Compute a hash value for the model, ignoring specified fields and nested DatabaseModel instances.
 
-        This ensures that changes to child models don't affect the parent's hash.
+        This ensures that changes to ignored fields or child models don't affect the parent's hash.
 
         Returns:
-            A hash value representing the model's non-model fields.
+            A hash value representing the model's non-ignored fields.
         """
         if not self.should_track:
             return 0
+
+        ignored_fields = self.ignore_tracking_fields()
 
         values = []
         for field_name in self.model_fields:
@@ -83,6 +85,9 @@ class TrackingMixin:
                 continue
 
             if field_name.startswith("_"):
+                continue
+
+            if field_name in ignored_fields:
                 continue
 
             value = getattr(self, field_name)
@@ -140,6 +145,17 @@ class TrackingMixin:
             return self._recursive_hash() != self._original_hash
 
         return True
+
+    def ignore_tracking_fields(self) -> set:
+        """
+        Override this method to specify fields to ignore when tracking changes.
+
+        Returns:
+            A set specifying fields to ignore.
+            Example:
+            {"field1", "field2"}
+        """
+        return {}
 
 
 class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):

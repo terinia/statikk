@@ -106,3 +106,52 @@ def test_tracking_disabled():
     assert my_database_model.was_modified is True  # untracked models should always be marked as modified
     my_database_model.foo = "bar"
     assert my_database_model.was_modified is True
+
+
+def test_testing_configuration():
+    class MyOtherNestedDatabaseModel(DatabaseModel):
+        baz: str = "baz"
+        qux: str = "qux"
+        xax: str = "xax"
+
+        @classmethod
+        def is_nested(cls) -> bool:
+            return True
+
+        def ignore_tracking_fields(self) -> set:
+            return {"baz", "qux"}
+
+    class MyNestedDatabaseModel(DatabaseModel):
+        bar: str = "bar"
+        other_nested: MyOtherNestedDatabaseModel
+
+        @classmethod
+        def is_nested(cls) -> bool:
+            return True
+
+    class MyDatabaseModel(DatabaseModel):
+        foo: str = "foo"
+        nested: MyNestedDatabaseModel
+
+        @property
+        def should_track(self) -> bool:
+            return True
+
+        def ignore_tracking_fields(self) -> set:
+            return {"foo"}
+
+    my_database_model = MyDatabaseModel(
+        foo="foo",
+        nested=MyNestedDatabaseModel(
+            bar="bar", other_nested=MyOtherNestedDatabaseModel(baz="baz", qux="qux", xax="xax")
+        ),
+    )
+    assert my_database_model.was_modified is False
+    my_database_model.foo = "bar"
+    assert my_database_model.was_modified is False
+    my_database_model.nested.other_nested.baz = "qux"
+    assert my_database_model.nested.other_nested.was_modified is False
+    my_database_model.nested.other_nested.qux = "xax"
+    assert my_database_model.nested.other_nested.was_modified is False
+    my_database_model.nested.bar = "baz"
+    assert my_database_model.nested.was_modified is True
