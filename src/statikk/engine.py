@@ -17,7 +17,7 @@ from statikk.models import (
     KeySchema,
 )
 from statikk.fields import FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID
-
+from copy import deepcopy
 from aws_xray_sdk.core import patch_all
 
 patch_all()
@@ -58,6 +58,7 @@ class Table:
         for idx in self.indexes:
             for model in self.models:
                 self._set_index_fields(model, idx)
+                model.model_rebuild(force=True)
                 model.set_table_ref(self)
         self._client = None
         self._dynamodb_table = None
@@ -162,7 +163,12 @@ class Table:
         )
 
     def _get_model_type_by_statikk_type(self, statikk_type: str) -> Type[DatabaseModel]:
-        return [model_type for model_type in self.models if model_type.type() == statikk_type][0]
+        model_type_filter = [model_type for model_type in self.models if model_type.type() == statikk_type]
+        if not model_type_filter:
+            raise InvalidModelTypeError(
+                f"Model type '{statikk_type}' not found. Make sure to register it through the models list."
+            )
+        return model_type_filter[0]
 
     def delete(self):
         """Deletes the DynamoDB table."""
@@ -235,7 +241,7 @@ class Table:
 
         with self.batch_write() as batch:
             for item in model.split_to_simple_objects():
-                if item._should_delete:
+                if item.should_delete:
                     batch.delete(item)
                 else:
                     batch.put(item)
@@ -288,10 +294,27 @@ class Table:
         response = self._get_dynamodb_table().update_item(**request)
         data = response["Attributes"]
         for key, value in data.items():
-            if key == FIELD_STATIKK_TYPE:
+            if key in [FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID]:
                 continue
             data[key] = self._deserialize_value(value, model.model_fields[key])
         return type(model)(**data)
+
+    def reparent_subtree(self, subtree_root: T, new_parent: T) -> T:
+        subtree_copy = deepcopy(subtree_root)
+        subtree_root._parent_changed = True
+
+        subtree_copy.set_parent_references(subtree_copy, force_override=True)
+        subtree_copy._parent = new_parent
+        for node in subtree_copy.dfs_traverse_hierarchy():
+            for idx in self.indexes:
+                new_index_values = self._compose_index_values(node, idx)
+                new_sort_key_value = new_index_values[idx.sort_key.name]
+                setattr(node, idx.sort_key.name, new_sort_key_value)
+                new_hash_key_value = new_index_values[idx.hash_key.name]
+                setattr(node, idx.hash_key.name, new_hash_key_value)
+            setattr(node, FIELD_STATIKK_PARENT_ID, new_parent.id)
+
+        return subtree_copy
 
     def batch_write(self):
         """
@@ -462,12 +485,11 @@ class Table:
         self,
         item: DatabaseModel,
         indexes: List[GSI],
-        force_override_index_fields: bool = False,
     ) -> DatabaseModel:
         for idx in indexes:
             index_fields = self._compose_index_values(item, idx)
             for key, value in index_fields.items():
-                if hasattr(item, key) and (getattr(item, key) is not None and not force_override_index_fields):
+                if hasattr(item, key) and (getattr(item, key) is not None and not item._parent_changed):
                     continue
                 if value is not None:
                     setattr(item, key, value)
@@ -558,8 +580,11 @@ class Table:
         return self.delimiter.join(sort_key_values)
 
     def _compose_index_values(self, model: DatabaseModel, idx: GSI) -> Dict[str, Any]:
-        hash_key_fields = model.index_definitions().get(idx.name, []).pk_fields
+        hash_key_fields = model.index_definitions().get(idx.name, None)
+        if hash_key_fields is None:
+            raise IncorrectHashKeyError(f"Model {model.__class__} does not have a hash key defined.")
 
+        hash_key_fields = hash_key_fields.pk_fields
         if len(hash_key_fields) == 0 and not model.is_nested():
             raise IncorrectHashKeyError(f"Model {model.__class__} does not have a hash key defined.")
 

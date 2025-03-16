@@ -597,7 +597,7 @@ class UpdateExpressionBuilder:
 
     def _safe_name(self, key):
         """Replace reserved words with a safe placeholder."""
-        if key.upper() in RESERVED_WORDS:
+        if key.upper() in RESERVED_WORDS or key.startswith("_"):
             safe_key = self.safe_name(key)
             self.expression_attribute_names[safe_key] = key
             return safe_key

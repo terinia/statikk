@@ -857,3 +857,76 @@ def test_nested_hierarchies():
     assert len(hierarchy.nested.doubly_nested[0].items) == 0
     hierarchy.delete()
     assert list(table.scan()) == []
+
+
+def test_update_parent():
+    class DoublyNestedModel(DatabaseModel):
+        bar: str
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(sk_fields=["bar"])}
+
+        @classmethod
+        def is_nested(cls) -> bool:
+            return True
+
+    class NestedModel(DatabaseModel):
+        nested_id: str
+        name: str
+        doubly_nested: list[DoublyNestedModel] = []
+
+        @classmethod
+        def is_nested(cls) -> bool:
+            return True
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(sk_fields=["nested_id"])}
+
+    class Model(DatabaseModel):
+        model_id: str
+        name: str
+        nested: list[NestedModel] = []
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(pk_fields=["model_id"], sk_fields=["name"])}
+
+    mock_dynamodb().start()
+    table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
+        models=[DoublyNestedModel, NestedModel, Model],
+    )
+    _create_dynamodb_table(table)
+    doubly_nested_model = DoublyNestedModel(bar="bar")
+    nested_model = NestedModel(nested_id="nested-model-1", name="nested-model-1", doubly_nested=[doubly_nested_model])
+    model = Model(model_id="model-1", name="model-1", nested=[nested_model])
+    model.save()
+    hierarchy = Model.query_hierarchy(hash_key=Equals("model-1"))
+    model_2 = Model(model_id="model-2", name="model-2", nested=[])
+    model_2.save()
+    nested = hierarchy.nested[0]
+    updated_hierarchy = nested.change_parent_to(model_2)
+    model_2.nested.append(updated_hierarchy)
+    model_2.save()
+    assert hierarchy.nested[0].is_parent_changed()
+    assert not model_2.nested[0].is_parent_changed()
+    assert model_2.nested[0].id == nested_model.id
+    model_2 = Model.query_hierarchy(hash_key=Equals("model-2"))
+    assert model_2.nested[0].id == nested_model.id
+    assert model_2.nested[0].gsi_pk == "model-2"
+    assert model_2.nested[0].gsi_sk == "Model|model-2|NestedModel|nested-model-1"
+
+    # when reparenting to a root node, the old subtree is deleted from the database after saving the old root
+    hierarchy.save()
+    hierarchy = Model.query_hierarchy(hash_key=Equals("model-1"))
+    assert len(hierarchy.nested) == 0
