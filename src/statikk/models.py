@@ -163,6 +163,20 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
     _parent: Optional[DatabaseModel] = None
     _model_types_in_hierarchy: dict[str, Type[DatabaseModel]] = {}
     _should_delete: bool = False
+    _parent_changed: bool = False
+
+    def is_parent_changed(self):
+        """
+        Recursively check if this node or any of its ancestors has been marked as having changed parents.
+        Returns True if the node or any ancestor has _parent_changed=True, otherwise False.
+        """
+        if self._parent_changed:
+            return True
+
+        if self._parent is not None:
+            return self._parent.is_parent_changed()
+
+        return False
 
     @classmethod
     def type(cls) -> str:
@@ -187,6 +201,10 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
     @property
     def is_simple_object(self) -> bool:
         return len(self._model_types_in_hierarchy) == 1
+
+    @property
+    def should_delete(self) -> bool:
+        return self._should_delete or self.is_parent_changed()
 
     @classmethod
     def query(
@@ -260,6 +278,9 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
     def mark_for_delete(self):
         self._should_delete = True
 
+    def change_parent_to(self, new_parent: DatabaseModel) -> T:
+        return self._table.reparent_subtree(self, new_parent)
+
     @classmethod
     def scan(
         cls,
@@ -280,7 +301,7 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
     def initialize_tracking(self):
         self._model_types_in_hierarchy[self.type()] = type(self)
         if not self.is_nested():
-            self._set_parent_references(self)
+            self.set_parent_references(self)
         self.init_tracking()
 
         return self
@@ -370,27 +391,58 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
     def get_type_from_hierarchy_by_name(self, name: str) -> Optional[Type[DatabaseModel]]:
         return self._model_types_in_hierarchy.get(name)
 
-    def _set_parent_to_field(self, field: DatabaseModel, parent: DatabaseModel, root: DatabaseModel):
-        if field._parent:
+    def _set_parent_to_field(
+        self, field: DatabaseModel, parent: DatabaseModel, root: DatabaseModel, force_override: bool = False
+    ):
+        if field._parent and not force_override:
             return  # Already set
         field._parent = parent
         root._model_types_in_hierarchy[field.type()] = type(field)
-        field._set_parent_references(root)
+        field.set_parent_references(root, force_override)
         field.init_tracking()
 
-    def _set_parent_references(self, root: DatabaseModel):
+    def set_parent_references(self, root: DatabaseModel, force_override: bool = False):
+        """
+        Sets parent references for all DatabaseModel objects in the hierarchy.
+        """
+        for parent, field_name, model in self.traverse_hierarchy():
+            self._set_parent_to_field(model, parent, root, force_override)
+
+    def traverse_hierarchy(self):
+        """
+        Traverses the object and yields tuples of (parent, field_name, field_value) for each DatabaseModel found.
+        """
         for field_name, field_value in self:
             if isinstance(field_value, DatabaseModel):
-                self._set_parent_to_field(field_value, self, root)
-            elif isinstance(field_value, list):
+                yield self, field_name, field_value
+            elif isinstance(field_value, (list, set)):
                 for item in field_value:
                     if isinstance(item, DatabaseModel):
-                        self._set_parent_to_field(item, self, root)
-            elif isinstance(field_value, set):
-                for item in field_value:
-                    if isinstance(item, DatabaseModel):
-                        self._set_parent_to_field(item, self, root)
+                        yield self, field_name, item
             elif isinstance(field_value, dict):
                 for key, value in field_value.items():
                     if isinstance(value, DatabaseModel):
-                        self._set_parent_to_field(value, self, root)
+                        yield self, key, value
+
+    def dfs_traverse_hierarchy(self):
+        """
+        Performs a depth-first traversal of the entire object hierarchy,
+        yielding each DatabaseModel in order from root to leaves.
+        """
+        yield self
+
+        fields = []
+        for field_name, field_value in self:
+            fields.append((field_name, field_value))
+
+        for field_name, field_value in fields:
+            if isinstance(field_value, DatabaseModel):
+                yield from field_value.dfs_traverse_hierarchy()
+            elif isinstance(field_value, (list, set)):
+                for item in field_value:
+                    if isinstance(item, DatabaseModel):
+                        yield from item.dfs_traverse_hierarchy()
+            elif isinstance(field_value, dict):
+                for key, value in field_value.items():
+                    if isinstance(value, DatabaseModel):
+                        yield from value.dfs_traverse_hierarchy()
