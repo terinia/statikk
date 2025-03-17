@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from typing import Any, Dict, Type, Optional, List, Union
+from typing import Any, Dict, Type, Optional, List, Union, get_type_hints, get_origin, get_args
 
 import boto3
 from botocore.config import Config
@@ -623,6 +623,26 @@ class Table:
                     data = self._serialize_item(enriched_item)
                     batch.delete_item(Key=data)
 
+    def inspect_optional_field(self, model_class, field_name):
+        field_type = model_class.model_fields[field_name].annotation
+
+        is_optional = False
+        inner_type = field_type
+
+        if get_origin(field_type) is Union:
+            args = get_args(field_type)
+            if len(args) == 2 and args[1] is type(None):
+                is_optional = True
+                inner_type = args[0]
+
+        elif hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
+            args = getattr(field_type, "__args__", [])
+            if len(args) == 2 and args[1] is type(None):
+                is_optional = True
+                inner_type = args[0]
+
+        return (is_optional, inner_type)
+
     def reconstruct_hierarchy(self, items: list[dict]) -> Optional[dict]:
         """
         Reconstructs a hierarchical dictionary structure from a flat list of dictionaries
@@ -704,7 +724,9 @@ class Table:
                 if field_name.startswith("_"):
                     continue
 
-                field_type = field_info.annotation
+                is_optional, inner_type = self.inspect_optional_field(parent_model_class, field_name)
+
+                field_type = inner_type if is_optional else field_info.annotation
 
                 if field_type == child_model_class:
                     matching_fields.append((field_name, "single"))
