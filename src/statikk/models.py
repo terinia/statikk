@@ -204,7 +204,18 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
 
     @property
     def should_delete(self) -> bool:
+        if self._is_any_parent_marked_for_deletion():
+            return True
+
         return self._should_delete or self.is_parent_changed()
+
+    def _is_any_parent_marked_for_deletion(self) -> bool:
+        current = self._parent
+        while current is not None:
+            if current._should_delete:
+                return True
+            current = current._parent
+        return False
 
     @classmethod
     def query(
