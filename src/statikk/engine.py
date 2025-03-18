@@ -306,8 +306,7 @@ class Table:
         subtree_copy.set_parent_references(subtree_copy, force_override=True)
         subtree_copy._parent = new_parent
         for node in subtree_copy.dfs_traverse_hierarchy():
-            for idx in self.indexes:
-                self.build_model_indexes(node)
+            self.build_model_indexes(node)
             setattr(node, FIELD_STATIKK_PARENT_ID, new_parent.id)
 
         return subtree_copy
