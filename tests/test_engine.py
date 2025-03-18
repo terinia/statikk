@@ -951,3 +951,32 @@ def test_update_parent():
     hierarchy.save()
     hierarchy = Model.query_hierarchy(hash_key=Equals("model-1"))
     assert len(hierarchy.nested) == 0
+
+
+def test_rebuild_model_indexes():
+    class MyDatabaseModel(DatabaseModel):
+        foo: str = "foo"
+        bar: str = "bar"
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(pk_fields=["foo"], sk_fields=["bar"])}
+
+    mock_dynamodb().start()
+    table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
+        models=[MyDatabaseModel],
+    )
+    _create_dynamodb_table(table)
+    my_database_model = MyDatabaseModel(foo="foo", bar="bar")
+    my_database_model.build_model_indexes()
+    assert my_database_model.gsi_pk == "foo"
+    assert my_database_model.gsi_sk == "MyDatabaseModel|bar"

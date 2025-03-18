@@ -217,6 +217,9 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
             current = current._parent
         return False
 
+    def build_model_indexes(self) -> T:
+        return self._table.build_model_indexes(self)
+
     @classmethod
     def query(
         cls: Type[T],
