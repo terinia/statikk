@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from statikk.models import DatabaseModel
+from statikk.models import DatabaseModel, IndexFieldConfig
 
 
 class SimpleObject(BaseModel):

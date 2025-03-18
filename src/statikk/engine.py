@@ -307,14 +307,19 @@ class Table:
         subtree_copy._parent = new_parent
         for node in subtree_copy.dfs_traverse_hierarchy():
             for idx in self.indexes:
-                new_index_values = self._compose_index_values(node, idx)
-                new_sort_key_value = new_index_values[idx.sort_key.name]
-                setattr(node, idx.sort_key.name, new_sort_key_value)
-                new_hash_key_value = new_index_values[idx.hash_key.name]
-                setattr(node, idx.hash_key.name, new_hash_key_value)
+                self.build_model_indexes(node)
             setattr(node, FIELD_STATIKK_PARENT_ID, new_parent.id)
 
         return subtree_copy
+
+    def build_model_indexes(self, model: T) -> T:
+        for idx in self.indexes:
+            new_index_values = self._compose_index_values(model, idx)
+            new_sort_key_value = new_index_values[idx.sort_key.name]
+            setattr(model, idx.sort_key.name, new_sort_key_value)
+            new_hash_key_value = new_index_values[idx.hash_key.name]
+            setattr(model, idx.hash_key.name, new_hash_key_value)
+        return model
 
     def batch_write(self):
         """
