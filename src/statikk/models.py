@@ -218,7 +218,8 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         return False
 
     def build_model_indexes(self) -> T:
-        return self._table.build_model_indexes(self)
+        for node in self.dfs_traverse_hierarchy():
+            self._table.build_model_indexes(node)
 
     @classmethod
     def query(
