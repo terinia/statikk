@@ -609,6 +609,13 @@ class Table:
 
         dynamodb_table = self._get_dynamodb_table()
 
+        if len(delete_items) > 0:
+            with dynamodb_table.batch_writer() as batch:
+                for item in delete_items:
+                    enriched_item = self._prepare_model_data(item, self.indexes)
+                    data = self._serialize_item(enriched_item)
+                    batch.delete_item(Key=data)
+
         if len(put_items) > 0:
             with dynamodb_table.batch_writer() as batch:
                 for item in put_items:
@@ -619,13 +626,6 @@ class Table:
                         continue
                     data = self._serialize_item(enriched_item)
                     batch.put_item(Item=data)
-
-        if len(delete_items) > 0:
-            with dynamodb_table.batch_writer() as batch:
-                for item in delete_items:
-                    enriched_item = self._prepare_model_data(item, self.indexes)
-                    data = self._serialize_item(enriched_item)
-                    batch.delete_item(Key=data)
 
     def inspect_optional_field(self, model_class, field_name):
         field_type = model_class.model_fields[field_name].annotation
