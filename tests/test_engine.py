@@ -1,6 +1,6 @@
 from _decimal import Decimal
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Type
 
 import pytest
 from boto3.dynamodb.conditions import Attr
@@ -22,6 +22,23 @@ from statikk.models import (
     IndexFieldConfig,
     TrackingMixin,
 )
+
+
+def _create_default_dynamodb_table(models: list[Type[DatabaseModel]]):
+    mock_dynamodb().start()
+    table = Table(
+        name="my-dynamodb-table",
+        key_schema=KeySchema(hash_key="id"),
+        indexes=[
+            GSI(
+                name="main-index",
+                hash_key=Key(name="gsi_pk"),
+                sort_key=Key(name="gsi_sk"),
+            )
+        ],
+        models=models,
+    )
+    _create_dynamodb_table(table)
 
 
 class MyAwesomeModel(DatabaseModel):
@@ -980,3 +997,56 @@ def test_rebuild_model_indexes():
     my_database_model.build_model_indexes()
     assert my_database_model.gsi_pk == "foo"
     assert my_database_model.gsi_sk == "MyDatabaseModel|bar"
+
+
+def test_add_child_node():
+    class MyOtherNestedDatabaseModel(DatabaseModel):
+        baz: str
+
+        @classmethod
+        def is_nested(cls) -> bool:
+            return True
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(sk_fields=["baz"])}
+
+        __hash__ = object.__hash__
+
+    class MyNestedDatabaseModel(DatabaseModel):
+        bar: str
+        other_nested: Optional[MyOtherNestedDatabaseModel] = None
+        list_nested: list[MyOtherNestedDatabaseModel] = []
+        set_nested: set[MyOtherNestedDatabaseModel] = {}
+
+        @classmethod
+        def is_nested(cls) -> bool:
+            return True
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(sk_fields=["bar"])}
+
+    class MyDatabaseModel(DatabaseModel):
+        foo: str
+        nested: MyNestedDatabaseModel
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(pk_fields=["foo"], sk_fields=[FIELD_STATIKK_TYPE])}
+
+    _create_default_dynamodb_table([MyDatabaseModel, MyNestedDatabaseModel, MyOtherNestedDatabaseModel])
+    my_database_model = MyDatabaseModel(foo="foo", nested=MyNestedDatabaseModel(bar="bar"))
+    my_database_model.build_model_indexes()
+    my_database_model.nested.add_child_node("other_nested", MyOtherNestedDatabaseModel(baz="baz"))
+    my_database_model.nested.add_child_node("list_nested", MyOtherNestedDatabaseModel(baz="bazz"))
+    my_database_model.nested.add_child_node("set_nested", MyOtherNestedDatabaseModel(baz="bazzz"))
+    assert my_database_model.nested.other_nested.baz == "baz"
+    assert my_database_model.nested.list_nested[0].baz == "bazz"
+    set_nested_item = my_database_model.nested.set_nested.pop()
+    assert set_nested_item.baz == "bazzz"
+    assert set_nested_item._parent == my_database_model.nested
+    assert set_nested_item.gsi_pk == set_nested_item._parent.gsi_pk
+    assert set_nested_item.gsi_sk == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazzz"
+    assert my_database_model.nested.other_nested._parent == my_database_model.nested
+    assert my_database_model.nested.list_nested[0]._parent == my_database_model.nested

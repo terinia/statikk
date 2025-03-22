@@ -4,7 +4,7 @@ import typing
 import logging
 from uuid import uuid4
 from typing import Optional, List, Any, Set, Type
-from statikk.typing import T
+from statikk.typing import T, inspect_optional_field
 
 from boto3.dynamodb.conditions import ComparisonCondition
 from pydantic import BaseModel, model_serializer, model_validator, Field, Extra
@@ -295,6 +295,37 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
 
     def change_parent_to(self, new_parent: DatabaseModel) -> T:
         return self._table.reparent_subtree(self, new_parent)
+
+    def add_child_node(self, field_name: str, child_node: DatabaseModel):
+        if not child_node.is_nested():
+            raise ValueError("Child node must be nested.")
+
+        if not hasattr(self, field_name):
+            raise ValueError(f"Field {field_name} does not exist on {self.__class__.__name__}")
+
+        is_optional, inner_type = inspect_optional_field(self.__class__, field_name)
+        field_type = inner_type if is_optional else self.model_fields[field_name].annotation
+
+        if hasattr(field_type, "__origin__") and field_type.__origin__ == list:
+            if not isinstance(getattr(self, field_name), list):
+                setattr(self, field_name, [])
+            reparented = child_node.change_parent_to(self)
+            getattr(self, field_name).append(reparented)
+            return reparented
+
+        elif hasattr(field_type, "__origin__") and field_type.__origin__ == set:
+            if not isinstance(getattr(self, field_name), set):
+                setattr(self, field_name, set())
+            reparented = child_node.change_parent_to(self)
+            getattr(self, field_name).add(reparented)
+            return reparented
+
+        elif issubclass(field_type, DatabaseModel):
+            reparented = child_node.change_parent_to(self)
+            setattr(self, field_name, reparented)
+            return reparented
+
+        raise ValueError(f"Unsupported field type: {field_type}")
 
     @classmethod
     def scan(
