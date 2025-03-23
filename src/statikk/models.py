@@ -512,8 +512,8 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         if field._parent and not force_override:
             return  # Already set
         field._parent = parent
-
-        field._session.add_change(parent, field_name, field)
+        if field.should_track_session:
+            field._session.add_change(parent, field_name, field)
         root._model_types_in_hierarchy[field.type()] = type(field)
         field.set_parent_references(root, force_override)
         field.init_tracking()
