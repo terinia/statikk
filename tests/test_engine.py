@@ -897,79 +897,6 @@ def test_nested_hierarchies():
     assert list(table.scan()) == []
 
 
-def test_update_parent():
-    class DoublyNestedModel(DatabaseModel):
-        bar: str
-
-        @classmethod
-        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
-            return {"main-index": IndexFieldConfig(sk_fields=["bar"])}
-
-        @classmethod
-        def is_nested(cls) -> bool:
-            return True
-
-    class NestedModel(DatabaseModel):
-        nested_id: str
-        name: str
-        doubly_nested: list[DoublyNestedModel] = []
-
-        @classmethod
-        def is_nested(cls) -> bool:
-            return True
-
-        @classmethod
-        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
-            return {"main-index": IndexFieldConfig(sk_fields=["nested_id"])}
-
-    class Model(DatabaseModel):
-        model_id: str
-        name: str
-        nested: list[NestedModel] = []
-
-        @classmethod
-        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
-            return {"main-index": IndexFieldConfig(pk_fields=["model_id"], sk_fields=["name"])}
-
-    mock_dynamodb().start()
-    table = Table(
-        name="my-dynamodb-table",
-        key_schema=KeySchema(hash_key="id"),
-        indexes=[
-            GSI(
-                name="main-index",
-                hash_key=Key(name="gsi_pk"),
-                sort_key=Key(name="gsi_sk"),
-            )
-        ],
-        models=[DoublyNestedModel, NestedModel, Model],
-    )
-    _create_dynamodb_table(table)
-    doubly_nested_model = DoublyNestedModel(bar="bar")
-    nested_model = NestedModel(nested_id="nested-model-1", name="nested-model-1", doubly_nested=[doubly_nested_model])
-    model = Model(model_id="model-1", name="model-1", nested=[nested_model])
-    model.save()
-    hierarchy = Model.query_hierarchy(hash_key=Equals("model-1"))
-    model_2 = Model(model_id="model-2", name="model-2", nested=[])
-    model_2.save()
-    nested = hierarchy.nested[0]
-    updated_hierarchy = nested.change_parent_to(model_2)
-    model_2.nested.append(updated_hierarchy)
-    model_2.save()
-    assert hierarchy.nested[0].is_parent_changed()
-    assert not model_2.nested[0].is_parent_changed()
-    assert model_2.nested[0].id == nested_model.id
-    model_2 = Model.query_hierarchy(hash_key=Equals("model-2"))
-    assert model_2.nested[0].id == nested_model.id
-    assert model_2.nested[0].gsi_pk == "model-2"
-    assert model_2.nested[0].gsi_sk == "Model|model-2|NestedModel|nested-model-1"
-
-    # when reparenting to a root node, the old subtree is deleted from the database after saving the old root
-    hierarchy.save()
-    hierarchy = Model.query_hierarchy(hash_key=Equals("model-1"))
-    assert len(hierarchy.nested) == 0
-
-
 def test_rebuild_model_indexes():
     class MyDatabaseModel(DatabaseModel):
         foo: str = "foo"
@@ -1017,7 +944,7 @@ def test_add_child_node():
         bar: str
         other_nested: Optional[MyOtherNestedDatabaseModel] = None
         list_nested: list[MyOtherNestedDatabaseModel] = []
-        set_nested: set[MyOtherNestedDatabaseModel] = {}
+        other_list_nested: list[MyOtherNestedDatabaseModel] = []
 
         @classmethod
         def is_nested(cls) -> bool:
@@ -1044,22 +971,23 @@ def test_add_child_node():
     my_database_model.build_model_indexes()
     my_database_model.nested.add_child_node("other_nested", MyOtherNestedDatabaseModel(baz="baz"))
     my_database_model.nested.add_child_node("list_nested", MyOtherNestedDatabaseModel(baz="bazz"))
-    my_database_model.nested.add_child_node("set_nested", MyOtherNestedDatabaseModel(baz="bazzz"))
+    my_database_model.nested.add_child_node("other_list_nested", MyOtherNestedDatabaseModel(baz="bazzz"))
     assert my_database_model.nested.other_nested.baz == "baz"
     assert my_database_model.nested.list_nested[0].baz == "bazz"
-    set_nested_item = my_database_model.nested.set_nested.pop()
-    assert set_nested_item.baz == "bazzz"
-    assert set_nested_item._parent == my_database_model.nested
-    assert set_nested_item.gsi_pk == set_nested_item._parent.gsi_pk
-    assert set_nested_item.gsi_sk == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazzz"
+    other_list_nested = my_database_model.nested.other_list_nested[0]
+    assert other_list_nested.baz == "bazzz"
+    assert other_list_nested._parent == my_database_model.nested
+    assert other_list_nested.gsi_pk == other_list_nested._parent.gsi_pk
+    assert other_list_nested.gsi_sk == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazzz"
     assert my_database_model.nested.other_nested._parent == my_database_model.nested
     assert my_database_model.nested.list_nested[0]._parent == my_database_model.nested
-    my_database_model.nested.add_child_node("set_nested", my_database_model.nested.list_nested[0])
+    my_database_model.nested.add_child_node("other_list_nested", my_database_model.nested.list_nested[0])
     assert my_database_model.nested.list_nested[0]._parent_changed is True
-    set_nested_new = my_database_model.nested.set_nested.pop()
-    assert set_nested_new._parent_changed is False
-    assert set_nested_new.gsi_sk == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazz"
-    my_database_model.nested.add_child_node("list_nested", set_nested_new)
+    other_list_nested_new = my_database_model.nested.other_list_nested[1]
+    assert len(my_database_model.nested.other_list_nested) == 2
+    assert other_list_nested_new._parent_changed is False
+    assert other_list_nested_new.gsi_sk == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazz"
+    my_database_model.nested.add_child_node("list_nested", other_list_nested_new)
     assert my_database_model.nested.list_nested[0]._parent_changed is False
     assert my_database_model.nested.list_nested[0]._parent == my_database_model.nested
     assert my_database_model.nested.list_nested[0].gsi_pk == "foo"
@@ -1067,4 +995,8 @@ def test_add_child_node():
         my_database_model.nested.list_nested[0].gsi_sk
         == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazz"
     )
-    assert set_nested_new._parent_changed is True
+    assert other_list_nested_new._parent_changed is True
+    my_database_model.save()
+    my_database_model = MyDatabaseModel.query_hierarchy(hash_key=Equals("foo"))
+    assert len(my_database_model.nested.list_nested) == 1
+    assert len(my_database_model.nested.other_list_nested) == 1

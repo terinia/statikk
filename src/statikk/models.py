@@ -14,7 +14,7 @@ from pydantic_core._pydantic_core import PydanticUndefined
 
 from statikk.conditions import Condition
 from statikk.expressions import DatabaseModelUpdateExpressionBuilder
-from statikk.fields import FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID
+from statikk.fields import FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID, FIELD_STATIKK_PARENT_FIELD_NAME
 
 if typing.TYPE_CHECKING:
     from statikk.engine import Table
@@ -196,13 +196,19 @@ class TrackingMixin:
         return {}
 
 
-class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
+class DatabaseModel(BaseModel, TrackingMixin):
     id: str = Field(default_factory=lambda: str(uuid4()))
     _parent: Optional[DatabaseModel] = None
+    _parent_field_name: Optional[str] = None
     _model_types_in_hierarchy: dict[str, Type[DatabaseModel]] = {}
     _should_delete: bool = False
     _parent_changed: bool = False
+    _is_persisted: bool = False
     _session = Session()
+
+    class Config:
+        extra = Extra.allow
+        arbitrary_types_allowed = True
 
     def __eq__(self, other):
         return self.id == other.id
@@ -256,11 +262,18 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         return len(self._model_types_in_hierarchy) == 1
 
     @property
+    def is_persisted(self) -> bool:
+        if self._parent is not None:
+            return self._parent.is_persisted
+
+        return self._is_persisted
+
+    @property
     def should_delete(self) -> bool:
         if self._is_any_parent_marked_for_deletion():
             return True
 
-        return self._should_delete or self.is_parent_changed()
+        return self.is_persisted and (self._should_delete or self.is_parent_changed())
 
     def _is_any_parent_marked_for_deletion(self) -> bool:
         current = self._parent
@@ -346,8 +359,8 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
     def mark_for_delete(self):
         self._should_delete = True
 
-    def change_parent_to(self, new_parent: DatabaseModel) -> T:
-        return self._table.reparent_subtree(self, new_parent)
+    def _change_parent_to(self, new_parent: DatabaseModel, field_name: str) -> T:
+        return self._table.reparent_subtree(self, new_parent, field_name)
 
     def _remove_from_parent(self, parent, field_name, subtree):
         is_optional, inner_type = inspect_optional_field(parent.__class__, field_name)
@@ -384,17 +397,17 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         if hasattr(field_type, "__origin__") and field_type.__origin__ == list:
             if not isinstance(getattr(self, field_name), list):
                 setattr(self, field_name, [])
-            reparented = child_node.change_parent_to(self)
+            reparented = child_node._change_parent_to(self, field_name)
             getattr(self, field_name).append(reparented)
 
         elif hasattr(field_type, "__origin__") and field_type.__origin__ == set:
             if not isinstance(getattr(self, field_name), set):
                 setattr(self, field_name, set())
-            reparented = child_node.change_parent_to(self)
+            reparented = child_node._change_parent_to(self, field_name)
             getattr(self, field_name).add(reparented)
 
         elif issubclass(field_type, DatabaseModel):
-            reparented = child_node.change_parent_to(self)
+            reparented = child_node._change_parent_to(self, field_name)
             setattr(self, field_name, reparented)
 
         if reparented:
@@ -418,6 +431,7 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         data[FIELD_STATIKK_TYPE] = self.type()
         if self._parent:
             data[FIELD_STATIKK_PARENT_ID] = self._parent.id
+            data[FIELD_STATIKK_PARENT_FIELD_NAME] = self._parent_field_name
         return data
 
     @model_validator(mode="after")
@@ -465,13 +479,6 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
                             items.append(item)
                         item.split_to_simple_objects(items)
 
-            elif isinstance(field_value, set):
-                for item in field_value:
-                    if hasattr(item, "__class__") and issubclass(item.__class__, DatabaseModel):
-                        if item not in items:
-                            items.append(item)
-                        item.split_to_simple_objects(items)
-
         return items
 
     def get_attribute(self, attribute_name: str):
@@ -487,14 +494,6 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
             elif isinstance(field_value, list):
                 for item in field_value:
                     if issubclass(item.__class__, DatabaseModel) and item.is_nested():
-                        nested_models.append(field_name)
-            elif isinstance(field_value, set):
-                for item in field_value:
-                    if issubclass(item.__class__, DatabaseModel) and item.is_nested():
-                        nested_models.append(field_name)
-            elif isinstance(field_value, dict):
-                for key, value in field_value.items():
-                    if issubclass(value.__class__, DatabaseModel) and value.is_nested():
                         nested_models.append(field_name)
         return set(nested_models)
 
@@ -512,6 +511,7 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         if field._parent and not force_override:
             return  # Already set
         field._parent = parent
+        field._parent_field_name = field_name
         if field.should_track_session:
             field._session.add_change(parent, field_name, field)
         root._model_types_in_hierarchy[field.type()] = type(field)
@@ -532,14 +532,10 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         for field_name, field_value in self:
             if isinstance(field_value, DatabaseModel):
                 yield self, field_name, field_value
-            elif isinstance(field_value, (list, set)):
+            elif isinstance(field_value, list):
                 for item in field_value:
                     if isinstance(item, DatabaseModel):
                         yield self, field_name, item
-            elif isinstance(field_value, dict):
-                for key, value in field_value.items():
-                    if isinstance(value, DatabaseModel):
-                        yield self, key, value
 
     def dfs_traverse_hierarchy(self):
         """
@@ -555,11 +551,7 @@ class DatabaseModel(BaseModel, TrackingMixin, extra=Extra.allow):
         for field_name, field_value in fields:
             if isinstance(field_value, DatabaseModel):
                 yield from field_value.dfs_traverse_hierarchy()
-            elif isinstance(field_value, (list, set)):
+            elif isinstance(field_value, list):
                 for item in field_value:
                     if isinstance(item, DatabaseModel):
                         yield from item.dfs_traverse_hierarchy()
-            elif isinstance(field_value, dict):
-                for key, value in field_value.items():
-                    if isinstance(value, DatabaseModel):
-                        yield from value.dfs_traverse_hierarchy()

@@ -16,7 +16,7 @@ from statikk.models import (
     GSI,
     KeySchema,
 )
-from statikk.fields import FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID
+from statikk.fields import FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID, FIELD_STATIKK_PARENT_FIELD_NAME
 from copy import deepcopy
 from aws_xray_sdk.core import patch_all
 
@@ -296,20 +296,23 @@ class Table:
         response = self._get_dynamodb_table().update_item(**request)
         data = response["Attributes"]
         for key, value in data.items():
-            if key in [FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID]:
+            if key in [FIELD_STATIKK_TYPE, FIELD_STATIKK_PARENT_ID, FIELD_STATIKK_PARENT_FIELD_NAME]:
                 continue
             data[key] = self._deserialize_value(value, model.model_fields[key])
         return type(model)(**data)
 
-    def reparent_subtree(self, subtree_root: T, new_parent: T) -> T:
+    def reparent_subtree(self, subtree_root: T, new_parent: T, field_name: str) -> T:
         subtree_copy = deepcopy(subtree_root)
         subtree_root._parent_changed = True
 
         subtree_copy.set_parent_references(subtree_copy, force_override=True)
         subtree_copy._parent = new_parent
+        subtree_copy._parent_field_name = field_name
+        parent = subtree_copy._parent
         for node in subtree_copy.dfs_traverse_hierarchy():
             self.build_model_indexes(node)
-            setattr(node, FIELD_STATIKK_PARENT_ID, new_parent.id)
+            setattr(node, FIELD_STATIKK_PARENT_ID, parent.id)
+            parent = node
 
         return subtree_copy
 
@@ -427,7 +430,9 @@ class Table:
         model_class = self._get_model_type_by_statikk_type(model_type)
 
         reconstructed_dict.pop(FIELD_STATIKK_TYPE, None)
-        return model_class(**reconstructed_dict)
+        model = model_class.model_validate(reconstructed_dict)
+        model._is_persisted = True
+        return model
 
     def scan(
         self,
@@ -626,6 +631,7 @@ class Table:
                         continue
                     if not enriched_item.should_write_to_database():
                         continue
+                    enriched_item._is_persisted = True
                     data = self._serialize_item(enriched_item)
                     batch.put_item(Item=data)
 
@@ -640,9 +646,6 @@ class Table:
         Returns:
             The top-level dictionary with its hierarchy fully reconstructed, or None if the list is empty
         """
-        if not items:
-            return None
-
         items_by_id = {item["id"]: item for item in items}
         children_by_parent_id = {}
         for item in items:
@@ -652,128 +655,74 @@ class Table:
                     children_by_parent_id[parent_id] = []
                 children_by_parent_id[parent_id].append(item)
 
-        # Find the root item (the one with no parent ID)
-        root_items = [item for item in items if FIELD_STATIKK_PARENT_ID not in item]
+        root_item = [item for item in items if FIELD_STATIKK_PARENT_ID not in item][0]
 
-        if not root_items:
-            return None
+        processed_root = self._process_item(root_item, items_by_id, children_by_parent_id)
+        return processed_root
 
-        if len(root_items) > 1:
-            root_item = root_items[0]
-        else:
-            root_item = root_items[0]
-
-        processed_items = set()
-        return self._reconstruct_item_with_children(root_item, items_by_id, children_by_parent_id, processed_items)
-
-    def _reconstruct_item_with_children(
-        self, item: dict, items_by_id: dict, children_by_parent_id: dict, processed_items: set
-    ) -> dict:
+    def _process_item(self, item: dict, items_by_id: dict, children_by_parent_id: dict) -> dict:
         """
-        Recursively reconstruct an item and its children using model class definitions.
+        Recursively processes an item and all its children to rebuild the hierarchical structure.
 
         Args:
-            item: The item to reconstruct
-            items_by_id: Map of all item IDs to items
-            children_by_parent_id: Map of parent IDs to lists of child items
-            processed_items: Set of already processed item IDs to avoid duplicates
+            item: The current item to process
+            items_by_id: Dictionary mapping item IDs to items
+            children_by_parent_id: Dictionary mapping parent IDs to lists of child items
 
         Returns:
-            The reconstructed item with all child references integrated
+            The processed item with all its child relationships resolved
         """
-        if item["id"] in processed_items:
-            return item
-        processed_items.add(item["id"])
-        result = item.copy()
+        processed_item = deepcopy(item)
 
-        if FIELD_STATIKK_PARENT_ID in result:
-            result.pop(FIELD_STATIKK_PARENT_ID)
+        if FIELD_STATIKK_TYPE in processed_item:
+            model_class = self._get_model_type_by_statikk_type(processed_item[FIELD_STATIKK_TYPE])
+            model_fields = model_class.model_fields
+        else:
+            return processed_item
 
-        children = children_by_parent_id.get(item["id"], [])
-        if not children:
-            return result
+        # Get children of this item
+        children = children_by_parent_id.get(processed_item["id"], [])
 
-        parent_model_class = self._get_model_type_by_statikk_type(item[FIELD_STATIKK_TYPE])
-
-        children_by_type = {}
+        # Group children by parent field name
+        children_by_field = {}
         for child in children:
-            child_type = child[FIELD_STATIKK_TYPE]
-            if child_type not in children_by_type:
-                children_by_type[child_type] = []
-            children_by_type[child_type].append(child)
+            field_name = child.get(FIELD_STATIKK_PARENT_FIELD_NAME)
+            if field_name:
+                if field_name not in children_by_field:
+                    children_by_field[field_name] = []
+                children_by_field[field_name].append(child)
 
-        for child_type, child_items in children_by_type.items():
-            child_model_class = self._get_model_type_by_statikk_type(child_type)
-            matching_fields = []
+        for field_name, field_info in model_fields.items():
+            if field_name not in children_by_field:
+                continue
 
-            for field_name, field_info in parent_model_class.model_fields.items():
-                if field_name.startswith("_"):
-                    continue
+            field_children = children_by_field[field_name]
 
-                is_optional, inner_type = inspect_optional_field(parent_model_class, field_name)
+            field_type = field_info.annotation
+            is_optional = False
+            inner_type = field_type
 
-                field_type = inner_type if is_optional else field_info.annotation
+            if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
+                args = field_type.__args__
+                if type(None) in args:
+                    is_optional = True
+                    # Get the non-None type
+                    inner_type = next(arg for arg in args if arg is not type(None))
 
-                if field_type == child_model_class:
-                    matching_fields.append((field_name, "single"))
+            if hasattr(inner_type, "__origin__") and inner_type.__origin__ == list:
+                child_list = []
 
-                elif hasattr(field_type, "__origin__") and field_type.__origin__ == list:
-                    args = getattr(field_type, "__args__", [])
-                    if args and args[0] == child_model_class:
-                        matching_fields.append((field_name, "list"))
+                for child in field_children:
+                    processed_child = self._process_item(child, items_by_id, children_by_parent_id)
+                    child_list.append(processed_child)
 
-                elif hasattr(field_type, "__origin__") and field_type.__origin__ == set:
-                    args = getattr(field_type, "__args__", [])
-                    if args and args[0] == child_model_class:
-                        matching_fields.append((field_name, "set"))
+                processed_item[field_name] = child_list
 
-            if matching_fields:
-                for field_name, container_type in matching_fields:
-                    if container_type == "list":
-                        if field_name not in result:
-                            result[field_name] = []
+            elif len(field_children) == 1:
+                processed_child = self._process_item(field_children[0], items_by_id, children_by_parent_id)
+                processed_item[field_name] = processed_child
 
-                        existing_ids = {
-                            item.get("id") for item in result[field_name] if isinstance(item, dict) and "id" in item
-                        }
-
-                        for child in child_items:
-                            if child["id"] in existing_ids:
-                                continue
-
-                            reconstructed_child = self._reconstruct_item_with_children(
-                                child, items_by_id, children_by_parent_id, processed_items
-                            )
-
-                            result[field_name].append(reconstructed_child)
-                            existing_ids.add(child["id"])
-
-                    elif container_type == "set":
-                        if field_name not in result:
-                            result[field_name] = []
-
-                        existing_ids = {
-                            item.get("id") for item in result[field_name] if isinstance(item, dict) and "id" in item
-                        }
-
-                        for child in child_items:
-                            if child["id"] in existing_ids:
-                                continue
-                            reconstructed_child = self._reconstruct_item_with_children(
-                                child, items_by_id, children_by_parent_id, processed_items
-                            )
-
-                            result[field_name].append(reconstructed_child)
-                            existing_ids.add(child["id"])
-
-                    elif container_type == "single":
-                        if child_items:
-                            reconstructed_child = self._reconstruct_item_with_children(
-                                child_items[0], items_by_id, children_by_parent_id, processed_items
-                            )
-                            result[field_name] = reconstructed_child
-
-        return result
+        return processed_item
 
 
 class BatchWriteContext:
