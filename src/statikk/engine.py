@@ -246,6 +246,8 @@ class Table:
                 else:
                     batch.put(item)
 
+        model._session.reset()
+
     def update_item(
         self,
         hash_key: str,

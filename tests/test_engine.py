@@ -1035,6 +1035,10 @@ def test_add_child_node():
         def index_definitions(cls) -> dict[str, IndexFieldConfig]:
             return {"main-index": IndexFieldConfig(pk_fields=["foo"], sk_fields=[FIELD_STATIKK_TYPE])}
 
+        @property
+        def should_track_session(self) -> bool:
+            return True
+
     _create_default_dynamodb_table([MyDatabaseModel, MyNestedDatabaseModel, MyOtherNestedDatabaseModel])
     my_database_model = MyDatabaseModel(foo="foo", nested=MyNestedDatabaseModel(bar="bar"))
     my_database_model.build_model_indexes()
@@ -1050,3 +1054,17 @@ def test_add_child_node():
     assert set_nested_item.gsi_sk == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazzz"
     assert my_database_model.nested.other_nested._parent == my_database_model.nested
     assert my_database_model.nested.list_nested[0]._parent == my_database_model.nested
+    my_database_model.nested.add_child_node("set_nested", my_database_model.nested.list_nested[0])
+    assert my_database_model.nested.list_nested[0]._parent_changed is True
+    set_nested_new = my_database_model.nested.set_nested.pop()
+    assert set_nested_new._parent_changed is False
+    assert set_nested_new.gsi_sk == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazz"
+    my_database_model.nested.add_child_node("list_nested", set_nested_new)
+    assert my_database_model.nested.list_nested[0]._parent_changed is False
+    assert my_database_model.nested.list_nested[0]._parent == my_database_model.nested
+    assert my_database_model.nested.list_nested[0].gsi_pk == "foo"
+    assert (
+        my_database_model.nested.list_nested[0].gsi_sk
+        == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazz"
+    )
+    assert set_nested_new._parent_changed is True
