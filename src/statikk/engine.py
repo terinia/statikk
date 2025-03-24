@@ -240,13 +240,24 @@ class Table:
         """
 
         with self.batch_write() as batch:
-            for item in model.split_to_simple_objects():
+            items = model.split_to_simple_objects()
+            new_keys = self._create_snapshot_representation(model)
+            keys_to_delete = model._db_snapshot_keys - new_keys
+
+            for key in keys_to_delete:
+                hash_key, sort_key = key.split("#", 1)
+                delete_params = {self.key_schema.hash_key: hash_key}
+                if sort_key:
+                    delete_params[self.key_schema.sort_key] = sort_key
+                batch.delete_by_key(delete_params)
+
+            for item in items:
                 if item.should_delete:
                     batch.delete(item)
                 else:
                     batch.put(item)
 
-        model._session.reset()
+        model._db_snapshot_keys = new_keys
 
     def update_item(
         self,
@@ -302,20 +313,17 @@ class Table:
         return type(model)(**data)
 
     def reparent_subtree(self, subtree_root: T, new_parent: T, field_name: str) -> T:
-        subtree_copy = deepcopy(subtree_root)
-        subtree_root._parent_changed = True
-
-        subtree_copy.set_parent_references(subtree_copy, force_override=True)
-        subtree_copy._parent = new_parent
-        subtree_copy._parent_field_name = field_name
+        subtree_root._parent = new_parent
+        subtree_root._parent_field_name = field_name
+        subtree_root.set_parent_references(subtree_root, force_override=True)
         parent = None
-        for node in subtree_copy.dfs_traverse_hierarchy():
+        for node in subtree_root.dfs_traverse_hierarchy():
             self.build_model_indexes(node)
             if parent:
                 setattr(node, FIELD_STATIKK_PARENT_ID, parent.id)
             parent = node
 
-        return subtree_copy
+        return subtree_root
 
     def build_model_indexes(self, model: T) -> T:
         for idx in self.indexes:
@@ -432,8 +440,7 @@ class Table:
 
         reconstructed_dict.pop(FIELD_STATIKK_TYPE, None)
         model = model_class.model_validate(reconstructed_dict)
-        for node in model.dfs_traverse_hierarchy():
-            node._is_persisted = True
+        model._db_snapshot_keys = self._create_snapshot_representation(model)
         return model
 
     def scan(
@@ -502,7 +509,7 @@ class Table:
         for idx in indexes:
             index_fields = self._compose_index_values(item, idx)
             for key, value in index_fields.items():
-                if hasattr(item, key) and (getattr(item, key) is not None and not item._parent_changed):
+                if hasattr(item, key) and (getattr(item, key) is not None):
                     continue
                 if value is not None:
                     setattr(item, key, value)
@@ -612,7 +619,9 @@ class Table:
             idx.sort_key.name: self._get_sort_key_value(model, idx),
         }
 
-    def _perform_batch_write(self, put_items: List[DatabaseModel], delete_items: List[DatabaseModel]):
+    def _perform_batch_write(
+        self, put_items: List[DatabaseModel], delete_items: List[DatabaseModel], delete_keys: list[dict[str, Any]]
+    ):
         if len(put_items) == 0 and len(delete_items) == 0:
             return
 
@@ -625,6 +634,11 @@ class Table:
                     data = self._serialize_item(enriched_item)
                     batch.delete_item(Key=data)
 
+        if len(delete_keys) > 0:
+            with dynamodb_table.batch_writer() as batch:
+                for key in delete_keys:
+                    batch.delete_item(Key=key)
+
         if len(put_items) > 0:
             with dynamodb_table.batch_writer() as batch:
                 for item in put_items:
@@ -633,9 +647,18 @@ class Table:
                         continue
                     if not enriched_item.should_write_to_database():
                         continue
-                    enriched_item._is_persisted = True
                     data = self._serialize_item(enriched_item)
                     batch.put_item(Item=data)
+
+    def _create_snapshot_representation(self, model: DatabaseModel) -> set:
+        db_snasphot = set()
+        for node in model.dfs_traverse_hierarchy():
+            model_key = {self.key_schema.hash_key: getattr(node, self.key_schema.hash_key)}
+            if self.key_schema.sort_key:
+                model_key[self.key_schema.sort_key] = getattr(node, self.key_schema.sort_key)
+            key_string = f"{model_key.get(self.key_schema.hash_key)}#{model_key.get(self.key_schema.sort_key, '')}"
+            db_snasphot.add(key_string)
+        return db_snasphot
 
     def reconstruct_hierarchy(self, items: list[dict]) -> Optional[dict]:
         """
@@ -735,6 +758,7 @@ class BatchWriteContext:
         self._table = app
         self._put_items: List[DatabaseModel] = []
         self._delete_items: List[DatabaseModel] = []
+        self._delete_keys: List[dict[str, Any]] = []
 
     def put(self, item: DatabaseModel):
         self._put_items.append(item)
@@ -742,8 +766,11 @@ class BatchWriteContext:
     def delete(self, item: DatabaseModel):
         self._delete_items.append(item)
 
+    def delete_by_key(self, key: dict[str, Any]):
+        self._delete_keys.append(key)
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._table._perform_batch_write(self._put_items, self._delete_items)
+        self._table._perform_batch_write(self._put_items, self._delete_items, self._delete_keys)

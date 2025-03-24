@@ -61,36 +61,6 @@ class TreeStructureChange(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
-class Session(BaseModel):
-    _changes: list[TreeStructureChange] = []
-
-    def add_change(self, new_parent: Optional[T], new_parent_field_name: Optional[str], subtree: T):
-        self._changes.append(
-            TreeStructureChange(new_parent=new_parent, new_parent_field_name=new_parent_field_name, subtree=subtree)
-        )
-
-    def get_subtree_changes_by_parent_id(
-        self, parent_id: str, subtree_id: str, field_name: str
-    ) -> Optional[TreeStructureChange]:
-        sorted_changes = sorted(self._changes, key=lambda change: change.timestamp, reverse=True)
-        return next(
-            filter(
-                lambda change: change.new_parent.id == parent_id
-                and change.subtree.id == subtree_id
-                and change.new_parent_field_name == field_name,
-                sorted_changes,
-            ),
-            None,
-        )
-
-    def get_last_change_for(self, subtree_id):
-        sorted_changes = sorted(self._changes, key=lambda change: change.timestamp, reverse=True)
-        return next(filter(lambda change: change.subtree.id == subtree_id, sorted_changes), None)
-
-    def reset(self):
-        self._changes = []
-
-
 class TrackingMixin:
     _original_hash: int = Field(exclude=True)
 
@@ -202,9 +172,7 @@ class DatabaseModel(BaseModel, TrackingMixin):
     _parent_field_name: Optional[str] = None
     _model_types_in_hierarchy: dict[str, Type[DatabaseModel]] = {}
     _should_delete: bool = False
-    _parent_changed: bool = False
-    _is_persisted: bool = False
-    _session = Session()
+    _db_snapshot_keys = set()
 
     class Config:
         extra = Extra.allow
@@ -215,33 +183,9 @@ class DatabaseModel(BaseModel, TrackingMixin):
             return False
         return self.id == other.id
 
-    def is_parent_changed(self):
-        """
-        Recursively check if this node or any of its ancestors has been marked as having changed parents.
-        Returns True if the node or any ancestor has _parent_changed=True, otherwise False.
-        """
-        if self._parent_changed:
-            return True
-
-        if self._parent is not None:
-            return self._parent.is_parent_changed()
-
-        return False
-
     @classmethod
     def type(cls) -> str:
         return cls.__name__
-
-    @property
-    def should_track_session(self) -> bool:
-        """
-        If set to True, subtree movements across the database model will be tracked in a session.
-        Use this if you need to move a subtree across multiple parent-child relationships within a single session.
-        Session is reset after each save.
-        """
-        if self._parent is not None:
-            return self._parent.should_track_session
-        return False
 
     @classmethod
     def index_definitions(cls) -> dict[str, IndexFieldConfig]:
@@ -264,15 +208,10 @@ class DatabaseModel(BaseModel, TrackingMixin):
         return len(self._model_types_in_hierarchy) == 1
 
     @property
-    def is_persisted(self) -> bool:
-        return self._is_persisted
-
-    @property
     def should_delete(self) -> bool:
         if self._is_any_parent_marked_for_deletion():
             return True
-
-        return self.is_persisted and (self._should_delete or self.is_parent_changed())
+        return self._should_delete
 
     def _is_any_parent_marked_for_deletion(self) -> bool:
         current = self._parent
@@ -361,22 +300,24 @@ class DatabaseModel(BaseModel, TrackingMixin):
     def _change_parent_to(self, new_parent: DatabaseModel, field_name: str) -> T:
         return self._table.reparent_subtree(self, new_parent, field_name)
 
-    def _remove_from_parent(self, parent, field_name, subtree):
+    def _remove_from_parent(self, parent: DatabaseModel, field_name: str):
         is_optional, inner_type = inspect_optional_field(parent.__class__, field_name)
         field_type = inner_type if is_optional else parent.model_fields[field_name].annotation
-        field = getattr(self, field_name)
+        field = getattr(parent, field_name)
         if hasattr(field_type, "__origin__") and field_type.__origin__ == list:
             if not isinstance(field, list):
-                setattr(self, field_name, [])
-            field.remove(next(filter(lambda item: item.id == subtree.id, getattr(parent, field_name)), None))
+                setattr(parent, field_name, [])
+            field.remove(next(filter(lambda item: item.id == self.id, getattr(parent, field_name)), None))
 
         elif hasattr(field_type, "__origin__") and field_type.__origin__ == set:
             if not isinstance(field, set):
-                setattr(self, field_name, set())
-            field.remove(next(filter(lambda item: item.id == subtree.id, getattr(parent, field_name)), None))
+                setattr(parent, field_name, set())
+            field.remove(next(filter(lambda item: item.id == self.id, getattr(parent, field_name)), None))
 
         elif issubclass(field_type, DatabaseModel):
-            setattr(parent, field_name, None)
+            current_value = getattr(parent, field_name)
+            if current_value and current_value.id == self.id:
+                setattr(parent, field_name, None)
 
     def add_child_node(self, field_name: str, child_node: DatabaseModel):
         if not child_node.is_nested():
@@ -385,10 +326,8 @@ class DatabaseModel(BaseModel, TrackingMixin):
         if not hasattr(self, field_name):
             raise ValueError(f"Field {field_name} does not exist on {self.__class__.__name__}")
 
-        if self.should_track_session:
-            previous_change = self._session.get_subtree_changes_by_parent_id(self.id, child_node.id, field_name)
-            if previous_change:
-                self._remove_from_parent(previous_change.new_parent, previous_change.new_parent_field_name, child_node)
+        if child_node._parent:
+            child_node._remove_from_parent(child_node._parent, child_node._parent_field_name)
 
         is_optional, inner_type = inspect_optional_field(self.__class__, field_name)
         field_type = inner_type if is_optional else self.model_fields[field_name].annotation
@@ -410,8 +349,6 @@ class DatabaseModel(BaseModel, TrackingMixin):
             setattr(self, field_name, reparented)
 
         if reparented:
-            if self.should_track_session:
-                self._session.add_change(self, field_name, reparented)
             return reparented
 
         raise ValueError(f"Unsupported field type: {field_type}")
@@ -511,8 +448,6 @@ class DatabaseModel(BaseModel, TrackingMixin):
             return  # Already set
         field._parent = parent
         field._parent_field_name = field_name
-        if field.should_track_session:
-            field._session.add_change(parent, field_name, field)
         root._model_types_in_hierarchy[field.type()] = type(field)
         field.set_parent_references(root, force_override)
         field.init_tracking()

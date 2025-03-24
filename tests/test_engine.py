@@ -982,27 +982,18 @@ def test_add_child_node():
     assert my_database_model.nested.other_nested._parent == my_database_model.nested
     assert my_database_model.nested.list_nested[0]._parent == my_database_model.nested
     my_database_model.nested.add_child_node("other_list_nested", my_database_model.nested.list_nested[0])
-    assert my_database_model.nested.list_nested[0]._parent_changed is True
     other_list_nested_new = my_database_model.nested.other_list_nested[1]
     assert len(my_database_model.nested.other_list_nested) == 2
-    assert other_list_nested_new._parent_changed is False
     assert other_list_nested_new.gsi_sk == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazz"
     my_database_model.nested.add_child_node("list_nested", other_list_nested_new)
-    assert my_database_model.nested.list_nested[0]._parent_changed is False
     assert my_database_model.nested.list_nested[0]._parent == my_database_model.nested
     assert my_database_model.nested.list_nested[0].gsi_pk == "foo"
     assert (
         my_database_model.nested.list_nested[0].gsi_sk
         == "MyDatabaseModel|MyNestedDatabaseModel|bar|MyOtherNestedDatabaseModel|bazz"
     )
-    assert other_list_nested_new._parent_changed is True
     my_database_model.save()
     my_database_model = MyDatabaseModel.query_hierarchy(hash_key=Equals("foo"))
     assert len(my_database_model.nested.list_nested) == 1
     assert len(my_database_model.nested.other_list_nested) == 1
     hierarchy = MyDatabaseModel.query_hierarchy(hash_key=Equals("foo"))
-    assert hierarchy.is_persisted is True
-    assert hierarchy.nested.is_persisted is True
-    assert hierarchy.nested.list_nested[0].is_persisted is True
-    assert hierarchy.nested.other_list_nested[0].is_persisted is True
-    assert hierarchy.nested.other_nested.is_persisted is True
