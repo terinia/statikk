@@ -211,6 +211,8 @@ class DatabaseModel(BaseModel, TrackingMixin):
         arbitrary_types_allowed = True
 
     def __eq__(self, other):
+        if other is None:
+            return False
         return self.id == other.id
 
     def is_parent_changed(self):

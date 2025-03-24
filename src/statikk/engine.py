@@ -308,10 +308,11 @@ class Table:
         subtree_copy.set_parent_references(subtree_copy, force_override=True)
         subtree_copy._parent = new_parent
         subtree_copy._parent_field_name = field_name
-        parent = subtree_copy._parent
+        parent = None
         for node in subtree_copy.dfs_traverse_hierarchy():
             self.build_model_indexes(node)
-            setattr(node, FIELD_STATIKK_PARENT_ID, parent.id)
+            if parent:
+                setattr(node, FIELD_STATIKK_PARENT_ID, parent.id)
             parent = node
 
         return subtree_copy
