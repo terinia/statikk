@@ -261,10 +261,7 @@ class Table:
                 batch.delete_by_key(delete_params)
 
             for item in items:
-                if item.should_delete:
-                    batch.delete(item)
-                else:
-                    batch.put(item)
+                batch.put(item)
 
         model._db_snapshot_keys = new_keys
 

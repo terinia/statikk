@@ -171,7 +171,6 @@ class DatabaseModel(BaseModel, TrackingMixin):
     _parent: Optional[DatabaseModel] = None
     _parent_field_name: Optional[str] = None
     _model_types_in_hierarchy: dict[str, Type[DatabaseModel]] = {}
-    _should_delete: bool = False
     _db_snapshot_keys = set()
 
     class Config:
@@ -206,20 +205,6 @@ class DatabaseModel(BaseModel, TrackingMixin):
     @property
     def is_simple_object(self) -> bool:
         return len(self._model_types_in_hierarchy) == 1
-
-    @property
-    def should_delete(self) -> bool:
-        if self._is_any_parent_marked_for_deletion():
-            return True
-        return self._should_delete
-
-    def _is_any_parent_marked_for_deletion(self) -> bool:
-        current = self._parent
-        while current is not None:
-            if current._should_delete:
-                return True
-            current = current._parent
-        return False
 
     def build_model_indexes(self) -> T:
         for node in self.dfs_traverse_hierarchy():
@@ -294,11 +279,29 @@ class DatabaseModel(BaseModel, TrackingMixin):
             return self._parent.should_write_to_database()
         return True
 
-    def mark_for_delete(self):
-        self._should_delete = True
-
     def _change_parent_to(self, new_parent: DatabaseModel, field_name: str) -> T:
         return self._table.reparent_subtree(self, new_parent, field_name)
+
+    def remove_child_node(self, child_node: DatabaseModel):
+        """
+        Remove a child node from this model, optionally specifying which field to search.
+
+        Args:
+            child_node: The database model instance to remove
+            field_name: Optional field name to limit the search scope
+        """
+        field_name = child_node._parent_field_name
+        field_info = self.model_fields[field_name]
+        field_value = getattr(self, field_name)
+        is_optional, inner_type = inspect_optional_field(self.__class__, field_name)
+        field_type = inner_type if is_optional else field_info.annotation
+
+        if hasattr(field_type, "__origin__") and field_type.__origin__ == list:
+            if isinstance(field_value, list):
+                field_value.remove(next(filter(lambda item: item.id == child_node.id, field_value), None))
+
+        elif isinstance(field_value, DatabaseModel) and field_value.id == child_node.id:
+            setattr(self, field_name, None)
 
     def _remove_from_parent(self, parent: DatabaseModel, field_name: str):
         is_optional, inner_type = inspect_optional_field(parent.__class__, field_name)
@@ -307,12 +310,7 @@ class DatabaseModel(BaseModel, TrackingMixin):
         if hasattr(field_type, "__origin__") and field_type.__origin__ == list:
             if not isinstance(field, list):
                 setattr(parent, field_name, [])
-            field.remove(next(filter(lambda item: item.id == self.id, getattr(parent, field_name)), None))
-
-        elif hasattr(field_type, "__origin__") and field_type.__origin__ == set:
-            if not isinstance(field, set):
-                setattr(parent, field_name, set())
-            field.remove(next(filter(lambda item: item.id == self.id, getattr(parent, field_name)), None))
+            field.remove(next(filter(lambda item: item.id == self.id, field), None))
 
         elif issubclass(field_type, DatabaseModel):
             current_value = getattr(parent, field_name)

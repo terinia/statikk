@@ -889,7 +889,8 @@ def test_nested_hierarchies():
         hierarchy.nested.doubly_nested[0].items[0].optional.gsi_sk
         == "ModelHierarchy|state|NestedModel|foo|DoublyNestedModel|bar|TriplyNested|faz|OptionalModel|xax"
     )
-    hierarchy.nested.doubly_nested[0].items[0].mark_for_delete()
+    item_to_delete = hierarchy.nested.doubly_nested[0].items[0]
+    hierarchy.nested.doubly_nested[0].remove_child_node(item_to_delete)
     hierarchy.save()
     hierarchy = ModelHierarchy.query_hierarchy(hash_key=Equals("foo_id"))
     assert len(hierarchy.nested.doubly_nested[0].items) == 0
