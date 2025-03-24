@@ -1,4 +1,5 @@
 import os
+import decimal
 from datetime import datetime
 from typing import Any, Dict, Type, Optional, List, Union
 
@@ -549,6 +550,8 @@ class Table:
             return {self._deserialize_value(item, item_annotation) for item in value}
         if isinstance(value, dict):
             return {key: self._deserialize_value(item, annotation) for key, item in value.items() if item is not None}
+        if isinstance(value, decimal.Decimal):
+            return float(value)
         return value
 
     def _serialize_value(self, value: Any):
