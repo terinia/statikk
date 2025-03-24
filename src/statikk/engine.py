@@ -24,6 +24,14 @@ from aws_xray_sdk.core import patch_all
 patch_all()
 
 
+DYNAMODB_CONTEXT = decimal.Context(
+    prec=38,  # precision
+    rounding=decimal.ROUND_HALF_EVEN,
+    traps=[decimal.Overflow, decimal.Underflow, decimal.InvalidOperation],
+)
+decimal.setcontext(DYNAMODB_CONTEXT)
+
+
 class InvalidIndexNameError(Exception):
     pass
 
@@ -536,6 +544,8 @@ class Table:
 
         if actual_annotation is datetime or "datetime" in str(annotation) and value is not None:
             return datetime.fromtimestamp(int(value))
+        if isinstance(value, decimal.Decimal):
+            return float(value)
         if actual_annotation is float:
             return float(value)
         if actual_annotation is list:
@@ -550,15 +560,13 @@ class Table:
             return {self._deserialize_value(item, item_annotation) for item in value}
         if isinstance(value, dict):
             return {key: self._deserialize_value(item, annotation) for key, item in value.items() if item is not None}
-        if isinstance(value, decimal.Decimal):
-            return float(value)
         return value
 
     def _serialize_value(self, value: Any):
         if isinstance(value, datetime):
             return int(value.timestamp())
         if isinstance(value, float):
-            return Decimal(value)
+            return DYNAMODB_CONTEXT.create_decimal_from_float(value)
         if isinstance(value, list):
             return [self._serialize_value(item) for item in value]
         if isinstance(value, set):

@@ -1,6 +1,6 @@
 from _decimal import Decimal
 from datetime import datetime, timezone
-from typing import List, Optional, Type
+from typing import List, Optional, Type, Any
 
 import pytest
 from boto3.dynamodb.conditions import Attr
@@ -996,4 +996,22 @@ def test_add_child_node():
     my_database_model = MyDatabaseModel.query_hierarchy(hash_key=Equals("foo"))
     assert len(my_database_model.nested.list_nested) == 1
     assert len(my_database_model.nested.other_list_nested) == 1
-    hierarchy = MyDatabaseModel.query_hierarchy(hash_key=Equals("foo"))
+
+
+def test_nested_model_with_decimal():
+    class MyModel(DatabaseModel):
+        id: str
+        foo: str = "foo"
+        values: dict[str, Any]
+
+        @classmethod
+        def index_definitions(cls) -> dict[str, IndexFieldConfig]:
+            return {"main-index": IndexFieldConfig(pk_fields=["foo"], sk_fields=[FIELD_STATIKK_TYPE])}
+
+    _create_default_dynamodb_table([MyModel])
+
+    my_model = MyModel(id="foo", values={"bar": 1.23})
+    my_model.save()
+    my_model_deserialized = MyModel.get("foo")
+    assert type(my_model_deserialized.values["bar"]) == float
+    assert my_model_deserialized.values["bar"] == 1.23
