@@ -657,8 +657,11 @@ class Table:
                     children_by_parent_id[parent_id] = []
                 children_by_parent_id[parent_id].append(item)
 
-        root_item = [item for item in items if FIELD_STATIKK_PARENT_ID not in item][0]
+        root_items = [item for item in items if FIELD_STATIKK_PARENT_ID not in item]
+        if not root_items:
+            return None
 
+        root_item = root_items[0]
         processed_root = self._process_item(root_item, items_by_id, children_by_parent_id)
         return processed_root
 
