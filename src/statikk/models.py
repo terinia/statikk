@@ -263,9 +263,6 @@ class DatabaseModel(BaseModel, TrackingMixin):
 
     @property
     def is_persisted(self) -> bool:
-        if self._parent is not None:
-            return self._parent.is_persisted
-
         return self._is_persisted
 
     @property

@@ -1000,3 +1000,9 @@ def test_add_child_node():
     my_database_model = MyDatabaseModel.query_hierarchy(hash_key=Equals("foo"))
     assert len(my_database_model.nested.list_nested) == 1
     assert len(my_database_model.nested.other_list_nested) == 1
+    hierarchy = MyDatabaseModel.query_hierarchy(hash_key=Equals("foo"))
+    assert hierarchy.is_persisted is True
+    assert hierarchy.nested.is_persisted is True
+    assert hierarchy.nested.list_nested[0].is_persisted is True
+    assert hierarchy.nested.other_list_nested[0].is_persisted is True
+    assert hierarchy.nested.other_nested.is_persisted is True

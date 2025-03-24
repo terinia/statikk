@@ -431,7 +431,8 @@ class Table:
 
         reconstructed_dict.pop(FIELD_STATIKK_TYPE, None)
         model = model_class.model_validate(reconstructed_dict)
-        model._is_persisted = True
+        for node in model.dfs_traverse_hierarchy():
+            node._is_persisted = True
         return model
 
     def scan(
