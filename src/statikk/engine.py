@@ -519,7 +519,6 @@ class Table:
                     continue
                 if value is not None:
                     setattr(item, key, value)
-        item.model_rebuild(force=True)
         return item
 
     def _serialize_item(self, item: DatabaseModel):
