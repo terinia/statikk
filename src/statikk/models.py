@@ -256,6 +256,9 @@ class DatabaseModel(BaseModel, TrackingMixin):
     def delete(self):
         return self._table.delete_item(self)
 
+    def delete_hierarchy(self):
+        return self._table.delete_hierarchy(self)
+
     def update(self, sort_key: Optional[str] = None) -> DatabaseModelUpdateExpressionBuilder:
         return DatabaseModelUpdateExpressionBuilder(self, sort_key)
 

@@ -209,6 +209,19 @@ class Table:
             data[key] = self._deserialize_value(value, model_class.model_fields[key])
         return model_class(**data)
 
+    def delete_hierarchy(self, model: DatabaseModel):
+        """
+        Deletes an item and all its children from the database by id, using the partition key of the table.
+        :param id: The id of the item to delete.
+        """
+        with self.batch_write() as batch:
+            for key in model._db_snapshot_keys | self._create_snapshot_representation(model):
+                hash_key, sort_key = key.split("#", 1)
+                delete_params = {self.key_schema.hash_key: hash_key}
+                if sort_key:
+                    delete_params[self.key_schema.sort_key] = sort_key
+                batch.delete_by_key(delete_params)
+
     def delete_item(self, model: DatabaseModel):
         """
         Deletes an item from the database by id, using the partition key of the table.
@@ -519,6 +532,7 @@ class Table:
                     continue
                 if value is not None:
                     setattr(item, key, value)
+        item.model_rebuild(force=True)
         return item
 
     def _serialize_item(self, item: DatabaseModel):
@@ -629,7 +643,7 @@ class Table:
     def _perform_batch_write(
         self, put_items: List[DatabaseModel], delete_items: List[DatabaseModel], delete_keys: list[dict[str, Any]]
     ):
-        if len(put_items) == 0 and len(delete_items) == 0:
+        if len(put_items) == 0 and len(delete_items) == 0 and (len(delete_keys) == 0):
             return
 
         dynamodb_table = self._get_dynamodb_table()

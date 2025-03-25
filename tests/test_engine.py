@@ -894,7 +894,7 @@ def test_nested_hierarchies():
     hierarchy.save()
     hierarchy = ModelHierarchy.query_hierarchy(hash_key=Equals("foo_id"))
     assert len(hierarchy.nested.doubly_nested[0].items) == 0
-    hierarchy.delete()
+    hierarchy.delete_hierarchy()
     assert list(table.scan()) == []
 
 
