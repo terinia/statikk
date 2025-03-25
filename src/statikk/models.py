@@ -136,7 +136,7 @@ class TrackingMixin:
     def _make_hashable(self, value: Any) -> Any:
         if isinstance(value, (str, int, float, bool, type(None))):
             return value
-        elif isinstance(value, list) or isinstance(value, set):
+        elif isinstance(value, (list, set, tuple)):
             return tuple(self._make_hashable(item) for item in value)
         elif isinstance(value, dict):
             return tuple((self._make_hashable(k), self._make_hashable(v)) for k, v in sorted(value.items()))
@@ -148,8 +148,9 @@ class TrackingMixin:
             try:
                 return hash(value)
             except TypeError:
+                origin = getattr(value, "__origin__", "unknown")
                 logger.warning(
-                    f"{type(value)} is unhashable, tracking will be ignored for this item. Consider implementing the ChangeTrackerMixin for this type."
+                    f"{type(value)} is unhashable at origin {origin}, tracking will be ignored for this item. Consider implementing the ChangeTrackerMixin for this type. "
                 )
                 return None
         return value
