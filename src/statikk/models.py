@@ -61,6 +61,11 @@ class TreeStructureChange(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
+class ChangeTrackerMixin:
+    def custom_hash(self) -> int:
+        return 0
+
+
 class TrackingMixin:
     _original_hash: int = Field(exclude=True)
 
@@ -137,12 +142,14 @@ class TrackingMixin:
             return tuple((self._make_hashable(k), self._make_hashable(v)) for k, v in sorted(value.items()))
         elif isinstance(value, BaseModel) and hasattr(value, "_recursive_hash"):
             return value._recursive_hash()
+        elif isinstance(value, ChangeTrackerMixin):
+            return value.custom_hash()
         else:
             try:
                 return hash(value)
             except TypeError:
                 logger.warning(
-                    f"{type(value)} is unhashable, tracking will not work. Consider implementing the TrackingMixin for this type."
+                    f"{type(value)} is unhashable, tracking will be ignored for this item. Consider implementing the ChangeTrackerMixin for this type."
                 )
                 return None
         return value
