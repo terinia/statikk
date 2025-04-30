@@ -382,7 +382,7 @@ class Table:
         ) and FIELD_STATIKK_TYPE not in model_class.index_definitions()[index_name].pk_fields:
             range_key = BeginsWith(model_class.type())
         if range_key:
-            if not model_class.is_nested():
+            if not model_class.is_nested() and FIELD_STATIKK_TYPE not in model_class.index_definitions()[index_name].pk_fields:
                 range_key.enrich(model_class=model_class)
             key_condition = key_condition & range_key.evaluate(index.sort_key.name)
 
